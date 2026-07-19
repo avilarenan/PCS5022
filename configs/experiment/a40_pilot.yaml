@@ -1,0 +1,44 @@
+datasets:
+  - Lorenz
+  - ETTh1
+  - Weather
+  - Exchange
+horizons:
+  - 96
+  - 336
+lookback: 96
+episode_partition: test
+episodes_per_dataset_horizon: 3
+support_size: 64
+query_size: 128
+seeds:
+  - 0
+  - 1
+actions:
+  - A0
+  - A1
+  - A2
+  - A3
+  - A4
+  - A5
+  - A6
+include_reference: false
+training:
+  head_lr: 0.001
+  adapter_lr: 0.0001
+  full_lr: 0.00001
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  effective_batch_size: 32
+  query_batch_size: 32
+  bf16: true
+  profile_flops: true
+controller:
+  hidden_size: 256
+  action_embedding_size: 16
+  dropout: 0.1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  ranking_weight: 0.2
+  epochs: 200
+  seed: 0

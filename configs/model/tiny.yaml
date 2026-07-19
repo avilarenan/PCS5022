@@ -1,0 +1,6 @@
+kind: tiny
+revision: tiny-v1
+d_model: 32
+patch_len: 8
+depth: 2
+heads: 4

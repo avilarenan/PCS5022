@@ -1,0 +1,20 @@
+defaults:
+  - model: moment
+  - experiment: mvp
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts
+  cache: .cache/huggingface
+
+device: cuda
+cost_weights:
+  parameters: 0.0
+  flops: 0.0
+  memory: 0.0
+  time: 0.0
+
+hydra:
+  job:
+    chdir: false

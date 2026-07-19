@@ -1,0 +1,6 @@
+kind: moment
+model_id: AutonLab/MOMENT-1-base
+revision: 5e44b0ea26376a176360f87831124e018f876d96
+package_revision: 38f7310ad594100747ca2a8357e9c7ca7d323e0e
+source_head_checkpoint: null
+allow_random_head: false

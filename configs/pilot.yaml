@@ -1,0 +1,59 @@
+defaults:
+  - model: moment
+  - experiment: a40_pilot
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/pilot
+  cache: .cache/huggingface
+
+device: cuda
+model:
+  source_head_checkpoint: artifacts/pilot/checkpoints/source-head-h{horizon}.pt
+  allow_random_head: false
+
+source_head:
+  dataset: ETTm2
+  require_provenance: true
+  output_pattern: source-head-h{horizon}.pt
+  training:
+    updates: 2000
+    batch_size: 32
+    validation_windows: 256
+    validation_interval: 100
+    learning_rate: 0.001
+    weight_decay: 0.01
+    gradient_clip: 1.0
+    bf16: true
+    seed: 0
+
+cost_weights:
+  parameters: 0.0
+  flops: 0.0
+  memory: 0.0
+  time: 0.0
+
+parity:
+  paper_id: n8seTOinYs
+  implementation_label: Time-PEFT-style
+  verified: false
+  verification_note: Official implementation was not publicly linked when this config was frozen.
+  datasets:
+    - Lorenz
+    - Weather
+  horizons:
+    - 96
+  seeds:
+    - 0
+    - 1
+    - 2
+
+pilot:
+  expected_screen_records: 336
+  expected_confirmation_records: 504
+  expected_reference_records: 8
+
+hydra:
+  job:
+    chdir: false

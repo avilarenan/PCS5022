@@ -1,0 +1,40 @@
+defaults:
+  - model: tiny
+  - experiment: mvp
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/reproduce
+  cache: .cache/huggingface
+
+device: cpu
+cost_weights:
+  parameters: 0.0
+  flops: 0.0
+  memory: 0.0
+  time: 0.0
+
+experiment:
+  datasets:
+    - Lorenz
+  horizons:
+    - 12
+  lookback: 24
+  episodes_per_dataset_horizon: 2
+  support_size: 16
+  query_size: 16
+  seeds:
+    - 0
+  include_reference: false
+  training:
+    effective_batch_size: 8
+    query_batch_size: 16
+    bf16: false
+    profile_flops: false
+  controller:
+    epochs: 20
+
+hydra:
+  job:
+    chdir: false

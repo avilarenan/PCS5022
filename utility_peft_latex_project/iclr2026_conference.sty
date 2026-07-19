@@ -1,0 +1,51 @@
+% Lightweight ICLR-style proposal layout for drafting.
+% Based on public ICLR formatting constraints: single column, 10pt, Times, natbib.
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{iclr2026_conference}[2026/07/07 ICLR-style proposal layout]
+
+\RequirePackage{times}
+\RequirePackage{natbib}
+\RequirePackage{geometry}
+\RequirePackage{fancyhdr}
+\RequirePackage{titlesec}
+
+\geometry{letterpaper,left=1.5in,top=1.0in,textwidth=5.5in,textheight=9.0in}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5.5pt}
+\renewcommand{\baselinestretch}{1.0}
+
+\newif\ificlrfinal
+\iclrfinalfalse
+\def\iclrfinalcopy{\iclrfinaltrue}
+\def\iclrconference#1{\gdef\@iclrconference{#1}}
+\gdef\@iclrconference{ICLR-style research proposal draft}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\itshape}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{8pt plus 2pt minus 2pt}{4pt}
+\titlespacing*{\subsection}{0pt}{6pt plus 2pt minus 2pt}{2pt}
+
+\makeatletter
+\renewcommand{\maketitle}{%
+  \thispagestyle{empty}%
+  \begin{flushleft}
+    {\LARGE\scshape \@title \par}
+    \vskip 0.16in
+    {\large \@author \par}
+    \vskip 0.06in
+    {\small \@iclrconference \par}
+  \end{flushleft}
+  \vskip 0.12in
+}
+\makeatother
+
+\renewenvironment{abstract}{%
+  \begin{center}\bfseries Abstract\end{center}%
+  \begin{quotation}\small}{\end{quotation}}

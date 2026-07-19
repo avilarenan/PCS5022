@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "utility-peft"
+version = "0.1.0"
+description = "Counterfactual utility prediction for time-series PEFT actions"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "click==8.1.7",
+  "hydra-core==1.3.2",
+  "momentfm @ git+https://github.com/moment-timeseries-foundation-model/moment.git@38f7310ad594100747ca2a8357e9c7ca7d323e0e",
+  "numpy==1.26.4",
+  "pandas==2.2.3",
+  "peft==0.17.1",
+  "pyarrow==17.0.0",
+  "scikit-learn==1.5.2",
+  "scipy==1.14.1",
+  "tabulate==0.9.0",
+  "torch>=2.4,<2.5",
+  "transformers==4.54.1",
+  "typer==0.12.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "pytest-cov==5.0.0",
+  "ruff==0.7.1",
+]
+
+[project.scripts]
+utility-peft = "utility_peft.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/utility_peft"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+  "gpu: requires a CUDA device",
+  "model: downloads or loads an external model checkpoint",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/utility_peft/cli.py" = ["B008"]
