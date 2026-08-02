@@ -1,0 +1,43 @@
+datasets:
+  - Lorenz
+  - CellCycle
+  - DoublePendulum
+  - Hopfield
+  - LorenzCoupled
+  - ECGCA115
+  - ECGCA515
+  - ETTh1
+  - ETTh2
+  - ETTm1
+  - ETTm2
+  - Weather
+  - Exchange
+horizons:
+  - 96
+  - 192
+  - 336
+lookback: 96
+episode_partition: test
+episodes_per_dataset_horizon: 3
+support_size: 64
+query_size: 128
+seeds:
+  - 0
+  - 1
+  - 2
+actions:
+  - L
+  - LF
+  - LC
+  - LFC
+update_steps: 100
+training:
+  head_lr: 0.001
+  adapter_lr: 0.0001
+  full_lr: 0.00001
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  effective_batch_size: 32
+  query_batch_size: 32
+  bf16: true
+  profile_flops: true

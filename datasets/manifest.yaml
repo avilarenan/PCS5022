@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "standard_split_policy": "ETT uses the fixed Informer/Autoformer month boundaries; other standard datasets use the conventional chronological 70/10/20 split.",
+  "synthetic_fidelity": "The deterministic generators are protocol-compatible local substitutes. They are not claimed to reproduce the paper's exact dysts trajectories or initial conditions.",
+  "datasets": {
+    "ETTh1": {
+      "family": "standard",
+      "aliases": ["ett-h1", "ett_h1"],
+      "local_path": "ETT-small/ETTh1.csv",
+      "url": "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/1d16c8f4f943005d613b5bc962e9eeb06058cf07/ETT-small/ETTh1.csv",
+      "sha256": "f18de3ad269cef59bb07b5438d79bb3042d3be49bdeecf01c1cd6d29695ee066",
+      "rows": 17420,
+      "channels": 7,
+      "split": {"kind": "fixed", "train_end": 8640, "validation_end": 11520, "test_end": 14400},
+      "source": "zhouhaoyi/ETDataset@1d16c8f4f943005d613b5bc962e9eeb06058cf07"
+    },
+    "ETTh2": {
+      "family": "standard",
+      "aliases": ["ett-h2", "ett_h2"],
+      "local_path": "ETT-small/ETTh2.csv",
+      "url": "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/1d16c8f4f943005d613b5bc962e9eeb06058cf07/ETT-small/ETTh2.csv",
+      "sha256": "a3dc2c597b9218c7ce1cd55eb77b283fd459a1d09d753063f944967dd6b9218b",
+      "rows": 17420,
+      "channels": 7,
+      "split": {"kind": "fixed", "train_end": 8640, "validation_end": 11520, "test_end": 14400},
+      "source": "zhouhaoyi/ETDataset@1d16c8f4f943005d613b5bc962e9eeb06058cf07"
+    },
+    "ETTm1": {
+      "family": "standard",
+      "aliases": ["ett-m1", "ett_m1"],
+      "local_path": "ETT-small/ETTm1.csv",
+      "url": "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/1d16c8f4f943005d613b5bc962e9eeb06058cf07/ETT-small/ETTm1.csv",
+      "sha256": "6ce1759b1a18e3328421d5d75fadcb316c449fcd7cec32820c8dafda71986c9e",
+      "rows": 69680,
+      "channels": 7,
+      "split": {"kind": "fixed", "train_end": 34560, "validation_end": 46080, "test_end": 57600},
+      "source": "zhouhaoyi/ETDataset@1d16c8f4f943005d613b5bc962e9eeb06058cf07"
+    },
+    "ETTm2": {
+      "family": "standard",
+      "aliases": ["ett-m2", "ett_m2"],
+      "local_path": "ETT-small/ETTm2.csv",
+      "url": "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/1d16c8f4f943005d613b5bc962e9eeb06058cf07/ETT-small/ETTm2.csv",
+      "sha256": "db973ca252c6410a30d0469b13d696cf919648d0f3fd588c60f03fdbdbadd1fd",
+      "rows": 69680,
+      "channels": 7,
+      "split": {"kind": "fixed", "train_end": 34560, "validation_end": 46080, "test_end": 57600},
+      "source": "zhouhaoyi/ETDataset@1d16c8f4f943005d613b5bc962e9eeb06058cf07"
+    },
+    "Weather": {
+      "family": "standard",
+      "aliases": ["weather"],
+      "local_path": "weather/weather.csv",
+      "url": "https://huggingface.co/datasets/thuml/Time-Series-Library/resolve/2b66e59ee19dac8f6f19fb5d4997f289fdfea357/weather/weather.csv?download=true",
+      "sha256": "34ee981d07313e51da2a50bb600072c8ae4a69cb4b0651f4cb93a069d7a2ba63",
+      "rows": 52696,
+      "channels": 21,
+      "split": {"kind": "ratio", "train": 0.7, "test": 0.2},
+      "source": "thuml/Time-Series-Library@2b66e59ee19dac8f6f19fb5d4997f289fdfea357"
+    },
+    "Exchange": {
+      "family": "standard",
+      "aliases": ["exchange", "exchange_rate", "exchange-rate"],
+      "local_path": "exchange_rate/exchange_rate.csv",
+      "url": "https://huggingface.co/datasets/thuml/Time-Series-Library/resolve/2b66e59ee19dac8f6f19fb5d4997f289fdfea357/exchange_rate/exchange_rate.csv?download=true",
+      "sha256": "48b4d9d3d508f5104162e85b9a6042e3557fde11aa9f2944eba8c0d0efc89842",
+      "rows": 7588,
+      "channels": 8,
+      "split": {"kind": "ratio", "train": 0.7, "test": 0.2},
+      "source": "thuml/Time-Series-Library@2b66e59ee19dac8f6f19fb5d4997f289fdfea357"
+    },
+    "Electricity": {
+      "family": "standard",
+      "aliases": ["electricity"],
+      "local_path": "electricity/electricity.csv",
+      "url": "https://huggingface.co/datasets/thuml/Time-Series-Library/resolve/2b66e59ee19dac8f6f19fb5d4997f289fdfea357/electricity/electricity.csv?download=true",
+      "sha256": "7e45845d54c5219bad0ae6bc1b5316cf8ff9cead5d33fa998a5a51c2e4a497ad",
+      "rows": 26304,
+      "channels": 321,
+      "split": {"kind": "ratio", "train": 0.7, "test": 0.2},
+      "source": "thuml/Time-Series-Library@2b66e59ee19dac8f6f19fb5d4997f289fdfea357",
+      "role": "source-head-only; keep out of evaluation when used for source-head training"
+    },
+    "Lorenz": {
+      "family": "synthetic",
+      "aliases": ["lorenz63", "lorenz-63", "lorenz_63"],
+      "generator": "lorenz63-rk4-v1",
+      "channels": 3,
+      "default_length": 12000,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "fidelity": "compatible deterministic substitute; not paper-exact"
+    },
+    "CellCycle": {
+      "family": "synthetic",
+      "aliases": ["cell-cycle", "cell_cycle", "cellcycle"],
+      "generator": "repressilator-compatible-rk4-v1",
+      "channels": 6,
+      "default_length": 12000,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "fidelity": "compatible deterministic substitute; not paper-exact"
+    },
+    "DoublePendulum": {
+      "family": "synthetic",
+      "aliases": ["double-pendulum", "double_pendulum", "doublependulum"],
+      "generator": "double-pendulum-rk4-v1",
+      "channels": 4,
+      "default_length": 12000,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "fidelity": "compatible deterministic substitute; not paper-exact"
+    },
+    "Hopfield": {
+      "family": "synthetic",
+      "aliases": ["hopfield-network", "hopfield_network"],
+      "generator": "continuous-hopfield-rk4-v1",
+      "channels": 6,
+      "default_length": 12000,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "fidelity": "compatible deterministic substitute; not paper-exact"
+    },
+    "LorenzCoupled": {
+      "family": "synthetic",
+      "aliases": ["lorenz-coupled", "lorenz_coupled", "coupled-lorenz", "coupled_lorenz"],
+      "generator": "coupled-lorenz-rk4-v1",
+      "channels": 6,
+      "default_length": 12000,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "fidelity": "compatible deterministic substitute; not paper-exact"
+    },
+    "ECGCA115": {
+      "family": "medical",
+      "aliases": ["ecgca115", "ecgca-115", "ecgca_115"],
+      "local_path": "nifecgdb/1.0.0/ecgca115.edf",
+      "url": "https://physionet.org/files/nifecgdb/1.0.0/ecgca115.edf",
+      "sha256": "6b8325cb4816299fb8845c3ed696ae3db7dbd1d93c19fa3dad56f1bd942d9dd5",
+      "channels": 6,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "source": "PhysioNet Non-Invasive Fetal ECG Database 1.0.0"
+    },
+    "ECGCA515": {
+      "family": "medical",
+      "aliases": ["ecgca515", "ecgca-515", "ecgca_515"],
+      "local_path": "nifecgdb/1.0.0/ecgca515.edf",
+      "url": "https://physionet.org/files/nifecgdb/1.0.0/ecgca515.edf",
+      "sha256": "353b60ac60cbe3bdadab1e7d8693e622dd221d8b7fc35d08cdd70a1d23c8cacc",
+      "channels": 6,
+      "split": {"kind": "ratio", "train": 0.6, "test": 0.2},
+      "source": "PhysioNet Non-Invasive Fetal ECG Database 1.0.0"
+    }
+  }
+}

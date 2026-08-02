@@ -94,7 +94,7 @@ class TinyBackbone(nn.Module):
         return self.predict_from_embeddings(self.encode(x, mask), horizon)
 
     def adapter_targets(self) -> tuple[str, ...]:
-        return ("q", "v")
+        return ("q", "k", "v")
 
     def source_statistics(self) -> Mapping[str, float]:
         return {

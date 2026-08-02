@@ -1,0 +1,31 @@
+defaults:
+  - model: tiny
+  - experiment: correlation_smoke
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/correlation-smoke
+  cache: .cache/huggingface
+
+device: cpu
+model:
+  adapter_implementation: paper
+  frequency_top_k: 3
+  adapter_dropout: 0.0
+
+correlation:
+  max_lag: 4
+  minimum_relative_benefit: 0.0
+  probability_threshold: 0.5
+  noninferiority_margin: 0.01
+  random_state: 17
+
+claim:
+  implementation_label: tiny-backbone plumbing smoke test
+  official_code_verified: false
+  note: Random tiny heads are diagnostics only and cannot support a Time-PEFT claim.
+
+hydra:
+  job:
+    chdir: false

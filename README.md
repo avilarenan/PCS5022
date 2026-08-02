@@ -1,4 +1,4 @@
-# Utility-PEFT
+# PCS5022: Utility-PEFT and Correlation-Routed Time-PEFT
 
 Utility-PEFT is a research proof of concept for selecting how a time-series
 foundation model should be adapted to a new forecasting episode. Instead of
@@ -11,11 +11,57 @@ head tuning, LoRA, frequency and channel adapters, FourierFT, and full fine-tuni
 The original LaTeX proposal is preserved under
 [`utility_peft_latex_project/`](utility_peft_latex_project/).
 
-> **Research status: POC / forecasting MVP.** The end-to-end pipeline and first
-> A40 pilot are complete. The oracle heterogeneity gate passed, but the learned
-> selector did not beat the best fixed source action. These results do not show
-> that Utility-PEFT surpasses Time-PEFT. The next research direction is a cheaper,
-> model-aware measure of residual cross-channel correlation nonstationarity.
+> **Research status: experiment-ready, result pending on GPU.** The historical
+> A40 Utility-PEFT pilot is preserved. The repository now also contains a matched
+> experiment that routes paper-specified frequency and channel modules from
+> support-only residual correlations and compares the route with always-on
+> L+F+C. The included CPU result is a plumbing test, not evidence of superiority.
+
+## New Experiment: Correlation-Routed Time-PEFT
+
+The accepted Time-PEFT method does **not** use temporal/multichannel complexity
+scores to switch modules. Its training algorithm keeps the forecast head, LoRA,
+frequency adapter, and channel adapter active together. The new contribution in
+this repository is therefore an outer router, not a cheaper replacement for an
+existing Time-PEFT routing rule.
+
+The router makes one frozen forecast on labeled support windows and computes
+vectorized residual autocorrelation and cross-channel correlation features. Two
+source-dataset logistic gates independently choose the frequency and channel
+modules. Evaluation is leave-one-dataset-out, so the held-out dataset contributes
+neither gate parameters nor thresholds. Query labels are used only after the route
+and adaptation are fixed.
+
+| Arm | Trainable components |
+| --- | --- |
+| `L` | Forecast head + rank-8, alpha-32 Q/K/V LoRA |
+| `LF` | `L` + top-3 frequency adapter; normalized F-both sum |
+| `LC` | `L` + channel adapter with an explicit zero frequency slot |
+| `LFC` | Algorithm 1 frequency → channel → LayerNorm stack |
+
+`LFC` follows the accepted paper's full dataflow. `LF` and `LC` are explicit
+routing ablations: the paper motivates both components but does not fully specify
+the head-side fusion for every partial mask. Their exact definitions and remaining
+parity limitations are recorded in `docs/EXPERIMENT.md`.
+
+Run the self-contained CPU execution check after installation:
+
+```bash
+./scripts/run_cpu_smoke.sh
+```
+
+Run the five-dataset GPU pilot or the complete 13-dataset workflow:
+
+```bash
+./scripts/run_correlation_pilot.sh
+./scripts/run_correlation_full.sh
+```
+
+All stages are resume-safe. Reports are written under
+`artifacts/correlation-*/correlation/reports/`. See
+[`docs/EXPERIMENT.md`](docs/EXPERIMENT.md) for the protocol,
+[`docs/COMPUTE_ANALYSIS.md`](docs/COMPUTE_ANALYSIS.md) for the derivation, and
+[`docs/CODEX_HANDOFF.md`](docs/CODEX_HANDOFF.md) for local continuation.
 
 ## Research Question
 
@@ -55,7 +101,10 @@ cross-dataset routing.
 | H3: selective adaptation surpasses the matched baseline | Not supported |
 | H4: selector transfers across held-out datasets | Not supported |
 | Official Time-PEFT parity | Blocked: no public official code located |
-| Residual correlation nonstationarity | Proposed next experiment |
+| Residual correlation evidence and strict support-only API | Implemented |
+| L/LF/LC/LFC matched LODO benchmark and reports | Implemented |
+| Full Time-PEFT 13-dataset manifest/workflow | Implemented |
+| Correlation-routing GPU result | Pending |
 
 The implementation enforces support/query separation with immutable episode
 manifests. Descriptor extraction, normalization, controller inputs, and action
@@ -107,7 +156,7 @@ See [`reports/mvp_report.md`](reports/mvp_report.md) for the generated report an
 [`reports/utility_summary.csv`](reports/utility_summary.csv) for the complete
 dataset/horizon/action table.
 
-## Next Direction: Residual Correlation Nonstationarity
+## Historical Pilot Motivation: Residual Correlation Nonstationarity
 
 The current Time-PEFT-inspired complexity baseline combines normalized spectral
 entropy with a support-only linear-Gaussian transfer-entropy proxy. That proxy is
@@ -119,7 +168,7 @@ Plain mean Pearson correlation is cheap, but it is not sufficient by itself.
 High correlation can indicate exploitable channel structure or simple redundancy,
 and a single average discards lag, topology, direction, and regime changes.
 
-The proposed next signal is **residual correlation nonstationarity (RCN)**. For
+The implemented next signal is **residual correlation nonstationarity (RCN)**. For
 support prediction residuals
 
 ```text
@@ -165,32 +214,27 @@ Across the 24 independent episode groups, after averaging action seeds:
 This is exploratory evidence, not a confirmatory result. It is small, affected by
 dataset-level confounding, and uses input rather than residual nonstationarity.
 It does show that correlation dynamics retain information lost by mean
-correlation. A local implementation diagnostic also reduced the warmed Weather
-correlation suite to milliseconds, while the current pairwise transfer-entropy
-path remained orders of magnitude slower. A formal benchmark must be added before
-making an efficiency claim.
+correlation. The committed implementation benchmark now measures the complete lag-8
+correlation suite against the existing lag-1 Gaussian transfer-entropy proxy. On
+this CPU host, the proxy was 4.42x slower at 21 channels and 13.44x slower at 64
+channels. Those isolated results do not establish end-to-end adaptation savings.
 
-### RCN Experiment Plan
+### Implemented RCN Experiment
 
-1. Add an immutable episode-level evidence cache keyed by episode ID,
-   preprocessing hash, model revision, source-head hash, and evidence version.
-2. Implement raw, lagged, residual, effective-rank, and nonstationarity correlation
-   features using support tensors only.
-3. Add equal-capacity `te`, `correlation_raw`, `correlation_dynamic`,
-   `correlation_residual`, `te_plus_correlation`, and `full` controller ablations.
-4. Reuse the existing 512 action records. Recompute evidence only; do not mutate
-   or regenerate utility labels.
-5. Evaluate `delta_channel` prediction, LODO NDCG, oracle regret, top-k action
-   accuracy, negative-adaptation rate, and evidence extraction time.
-6. Use nested source-dataset checkpoint selection and paired stratified bootstrap
-   intervals. Target-query data must remain inaccessible to every evidence path.
-7. If the reuse-only screen is promising, add new chronological episodes and run
-   the targeted pairs A2/A4 and A3/A5 before repeating the full action sweep.
+The new implementation performs one support-only frozen forward; computes windowed
+signed/absolute residual correlations, effective rank, nonstationarity, maximum
+lagged cross-correlation, and residual autocorrelations; fits separate frequency
+and channel gates on source datasets; and evaluates the resulting action against
+always-on `LFC` in leave-one-dataset-out folds. The exhaustive four-action sweep is
+retained as offline research/calibration cost and is never presented as deployment
+cost. Deployment time includes the frozen support forecast, evidence extraction,
+routing, and selected adaptation.
 
-The confirmatory criterion should be preregistered before the new run. The primary
-claim requires lower held-out regret than transfer entropy with a paired interval
-excluding zero. A weaker efficiency result can be reported if correlation is
-NDCG-noninferior within 0.01 while extracting evidence at least 10 times faster.
+The preregistered primary criterion is routed MSE noninferiority within 1% of `LFC`
+together with lower end-to-end adaptation time. Confidence intervals and additional
+controls should be added before a publication claim. The immutable Parquet utility
+store, rather than the aggregate report, retains every paired raw record needed for
+that extension.
 
 ## Foundation Model and Baseline Boundary
 
@@ -202,21 +246,22 @@ checkpoint at revision `5e44b0ea26376a176360f87831124e018f876d96`.
 Transformers is pinned to 4.54.1, and PEFT is pinned to 0.17.1.
 
 MOMENT's foundation checkpoint contains a reconstruction head, not a pretrained
-long-horizon forecasting head. The pilot therefore trains horizon-specific heads
-on ETTm2 and binds each checkpoint to source-data, preprocessing, split, and
-evaluation-exclusion hashes. Random forecasting heads are allowed only in the
-synthetic smoke path.
+long-horizon forecasting head. The historical A40 pilot trains horizon-specific
+heads on ETTm2 and excludes ETTm2 from evaluation. The new 13-dataset workflow
+instead trains heads on Electricity, which is outside the target suite. Each
+checkpoint is bound to source-data, preprocessing, split, and target-exclusion
+hashes. Random forecasting heads are allowed only in the synthetic smoke path.
 
-As of July 19, 2026, no public official Time-PEFT implementation was found on the
+As of August 1, 2026, no public official Time-PEFT implementation was found on the
 paper pages, author repositories, KAIST DMLab organization, or Hugging Face. The
-project-owned frequency/channel implementation must therefore be called
-**Time-PEFT-style**. Reports contain a machine-readable claim guard and cannot
-claim to reproduce or surpass the published method. See
+historical implementation remains **Time-PEFT-style**, and the new matched stack is
+a **paper-specified Time-PEFT reimplementation**. Neither can claim official
+reproduction or superiority without parity and GPU evidence. See
 [`BASELINE_DISCREPANCIES.md`](BASELINE_DISCREPANCIES.md), the
 [`ICML paper page`](https://icml.cc/virtual/2026/poster/61767), and the
 [`OpenReview entry`](https://openreview.net/forum?id=n8seTOinYs).
 
-## Actions
+## Legacy Utility-PEFT Actions
 
 | ID | Trainable operation |
 | --- | --- |
@@ -235,28 +280,34 @@ residual zero-impact initialization, top-frequency fraction `1/4`, and bottlenec
 width `d_model/8`. FourierFT uses PEFT 0.17.1 with 1,000 frequencies, scaling 150,
 seed 777, and zero initialization.
 
+These A0-A7 definitions preserve the reported historical pilot. The new experiment
+uses the separate L/LF/LC/LFC definitions shown above; do not mix the two adapter
+implementations in one result table.
+
 ## Installation
 
 The tested environment is Python 3.11, PyTorch 2.4.1, CUDA 12.4, and one NVIDIA
 A40 with 46 GB of memory.
 
 ```bash
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.lock
-.venv/bin/pip install -e . --no-deps
+./scripts/setup_env.sh
 ```
+
+The equivalent manual commands are in `docs/CODEX_HANDOFF.md`.
 
 Model checkpoints, datasets, utility records, and run artifacts are downloaded
 or generated outside Git under `.cache/`, `data/`, and `artifacts/`.
 
-Run the complete synthetic CPU path first:
+Run both CPU execution checks first:
 
 ```bash
 .venv/bin/utility-peft reproduce --updates 2
+PATH="$PWD/.venv/bin:$PATH" ./scripts/run_cpu_smoke.sh
 ```
 
-This exercises all seven deployable actions, utility persistence, the oracle
-analysis, controller fitting, and report generation with a tiny backbone.
+The first preserves the seven-action Utility-PEFT path. The second exercises the
+new four-arm residual-correlation workflow and LODO report generation. Both use
+tiny random heads and validate plumbing only.
 
 ## A40 Experimental Protocol
 
@@ -346,16 +397,17 @@ always-on A5, and the target oracle.
 
 | Dataset | Role | Acquisition |
 | --- | --- | --- |
-| Lorenz | Evaluation | Deterministic project-owned RK4 generator |
-| ETTh1 | Evaluation | Official ETT repository, pinned source commit |
-| Weather | Evaluation | Official THUML Hugging Face revision |
-| Exchange | Evaluation | Official THUML Hugging Face revision |
-| ETTm2 | Source head only | Official ETT repository; excluded from evaluation |
-| ECGCA115 | Deferred | Manual acquisition required |
+| Lorenz, CellCycle, DoublePendulum, Hopfield, LorenzCoupled | Evaluation | Deterministic compatible local generators; not paper-exact |
+| ECGCA115, ECGCA515 | Evaluation | Pinned PhysioNet EDF files with hash verification |
+| ETTh1, ETTh2, ETTm1, ETTm2 | Evaluation | Pinned official ETT repository files |
+| Weather, Exchange | Evaluation | Pinned THUML Time-Series-Library files |
+| Electricity | Correlation source head only | Pinned THUML file; excluded from all target folds |
 
-The broader MVP configuration also supports horizon 192 and five episodes per
-dataset/horizon, but the reported A40 pilot uses only the preregistered smaller
-protocol above.
+Exact URLs, revisions, checksums, aliases, channel counts, and splits live in
+[`datasets/manifest.yaml`](datasets/manifest.yaml). The five-dataset pilot is a
+systems check; `configs/correlation.yaml` covers the paper's complete 13-dataset
+suite. The historical A40 results above still use their original four-dataset
+protocol and ETTm2 source head.
 
 ## Artifacts
 

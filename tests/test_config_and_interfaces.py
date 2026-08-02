@@ -50,6 +50,7 @@ def test_cli_exposes_required_commands() -> None:
         "prepare-data",
         "train-source-head",
         "reproduce-time-peft",
+        "run-correlation-benchmark",
         "reproduce",
         "generate-utilities",
         "train-controller",

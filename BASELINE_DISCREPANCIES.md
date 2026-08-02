@@ -43,3 +43,34 @@ not evidence of numerical parity with an unavailable author implementation.
 `verified=false`, generated reports use the label `Time-PEFT-style` and include a
 hard claim guard. `--protocol paper` is blocked until an official runner and exact
 accepted-paper configuration are available and pinned.
+
+## Paper-specified correlation benchmark
+
+The newer `L/LF/LC/LFC` workflow is separate from the historical A2-A5 MVP. It
+implements the accepted-paper defaults that can be recovered from the text: rank-8,
+alpha-32 LoRA on Q/K/V; top-3 FFT filtering with `h2=h1`; and a shared-down,
+channel-specific-up adapter with `r=h1/2`. `LFC` is the matched always-on baseline.
+
+Algorithm 1 makes the full path explicit: `Efilt=Freq(Eback)`,
+`Ech=Channel(Eback, Efilt)`, then `ForecastHead(LayerNorm(Ech))`. The `LFC` arm
+implements that dataflow without a residual bypass. The smaller routing arms are
+factorial extensions motivated by Table 4: `LF` uses the paper's F-both streams with
+an explicitly chosen normalized sum, while `LC` supplies zeros in the absent
+frequency slot and retains the matched channel-adapter capacity.
+
+Other details remain under-specified without author code: frequency-amplitude
+aggregation, adapter initialization, the head-side fusion operator for channel-free
+F-both, LayerNorm affine parameters, per-dataset learning rates and batches, patience,
+exact splits/preprocessing, random seeds, and chaotic-trajectory generation. This
+repository uses per-sample/channel frequency scores averaged over hidden dimensions,
+Xavier adapter initialization, and non-affine output LayerNorm. These explicit choices
+and the two routing-only ablations prevent an exact reproduction claim.
+
+The paper's spectral-entropy and transfer-entropy quantities are dataset diagnostics;
+Algorithm 1 does not use them to select adapters. Residual-correlation activation is a
+new outer router. Its deployment cost includes its frozen support forecast and evidence
+pass, while the always-on `LFC` baseline is not charged for transfer-entropy extraction.
+
+The five local chaotic generators are deterministic compatible substitutes, not exact
+paper trajectories. GPU results must retain the label **paper-specified Time-PEFT
+reimplementation** until an authoritative release enables numerical parity checks.

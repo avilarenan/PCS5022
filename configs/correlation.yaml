@@ -1,0 +1,50 @@
+defaults:
+  - model: moment
+  - experiment: correlation_full
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/correlation-full
+  cache: .cache/huggingface
+
+device: cuda
+model:
+  adapter_implementation: paper
+  frequency_top_k: 3
+  adapter_dropout: 0.0
+  source_head_checkpoint: artifacts/correlation-full/checkpoints/source-head-h{horizon}.pt
+  allow_random_head: false
+
+# Electricity is intentionally outside the 13-dataset evaluation suite. This
+# keeps the source forecasting head independent from every held-out target.
+source_head:
+  dataset: Electricity
+  require_provenance: true
+  output_pattern: source-head-h{horizon}.pt
+  training:
+    updates: 2000
+    batch_size: 1
+    validation_windows: 16
+    validation_interval: 100
+    learning_rate: 0.001
+    weight_decay: 0.01
+    gradient_clip: 1.0
+    bf16: true
+    seed: 0
+
+correlation:
+  max_lag: 8
+  minimum_relative_benefit: 0.002
+  probability_threshold: 0.5
+  noninferiority_margin: 0.01
+  random_state: 17
+
+claim:
+  implementation_label: paper-specified Time-PEFT reimplementation
+  official_code_verified: false
+  note: Exact parity is impossible until the authors publish code and omitted hyperparameters.
+
+hydra:
+  job:
+    chdir: false

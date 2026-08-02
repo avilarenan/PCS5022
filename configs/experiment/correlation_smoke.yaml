@@ -1,0 +1,30 @@
+datasets:
+  - Lorenz
+  - DoublePendulum
+  - Hopfield
+horizons:
+  - 8
+lookback: 16
+episode_partition: test
+episodes_per_dataset_horizon: 2
+support_size: 8
+query_size: 8
+seeds:
+  - 0
+actions:
+  - L
+  - LF
+  - LC
+  - LFC
+update_steps: 2
+training:
+  head_lr: 0.001
+  adapter_lr: 0.001
+  full_lr: 0.00001
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  effective_batch_size: 4
+  query_batch_size: 4
+  bf16: false
+  profile_flops: false
+

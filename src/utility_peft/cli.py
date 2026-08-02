@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import time
-from dataclasses import replace
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,11 @@ import torch
 import typer
 from omegaconf import DictConfig, OmegaConf
 
-from utility_peft.actions import REFERENCE_ACTION, resolve_actions
+from utility_peft.actions import (
+    REFERENCE_ACTION,
+    resolve_actions,
+    resolve_time_peft_actions,
+)
 from utility_peft.artifacts import ArtifactLayout
 from utility_peft.backbones.moment import MomentBackbone
 from utility_peft.backbones.tiny import TinyBackbone
@@ -23,6 +29,12 @@ from utility_peft.controller import (
     ControllerTrainingConfig,
     train_controller,
     train_controller_nested,
+)
+from utility_peft.correlation import extract_correlation_evidence
+from utility_peft.correlation_benchmark import (
+    CorrelationRouterConfig,
+    evaluate_correlation_lodo,
+    paper_time_peft_parameter_savings,
 )
 from utility_peft.data.datasets import load_dataset_series
 from utility_peft.episodes import (
@@ -52,6 +64,7 @@ from utility_peft.source_head import (
     validate_source_head_provenance,
 )
 from utility_peft.store import UtilityStore
+from utility_peft.types import SupportView
 from utility_peft.utils import (
     atomic_write_json,
     environment_metadata,
@@ -217,6 +230,148 @@ def reproduce_time_peft(
     typer.echo(f"Generated {generated} matched records against {label}")
 
 
+@app.command("run-correlation-benchmark")
+def run_correlation_benchmark(
+    config_name: str = typer.Option("correlation_pilot", "--config"),
+    override: list[str] | None = typer.Option(None, "--override", "-o"),
+    analyze_only: bool = typer.Option(
+        False,
+        help="Reuse a complete utility store and rebuild only the LODO report.",
+    ),
+) -> None:
+    """Compare residual-correlation routing with always-on L+F+C Time-PEFT."""
+
+    config = load_config(config_name, override)
+    if str(config.model.get("adapter_implementation", "mvp")) != "paper":
+        raise typer.BadParameter(
+            "The correlation benchmark requires model.adapter_implementation=paper"
+        )
+    layout = _layout(config)
+    os.environ.setdefault("HF_HOME", str(Path(config.paths.cache).resolve()))
+    repository = EpisodeRepository(layout.episodes)
+    datasets = {str(name) for name in config.experiment.datasets}
+    horizons = {int(value) for value in config.experiment.horizons}
+    manifests = [
+        manifest
+        for manifest in repository.manifests()
+        if manifest.dataset in datasets
+        and manifest.horizon in horizons
+        and manifest.partition == str(config.experiment.episode_partition)
+        and manifest.lookback == int(config.experiment.lookback)
+        and manifest.support_size == int(config.experiment.support_size)
+        and manifest.query_size == int(config.experiment.query_size)
+    ]
+    expected = len(datasets) * len(horizons) * int(config.experiment.episodes_per_dataset_horizon)
+    if len(manifests) != expected:
+        raise typer.BadParameter(
+            f"Expected {expected} benchmark episodes, found {len(manifests)}; "
+            f"run `utility-peft prepare-data --config {config_name} --download` first"
+        )
+
+    correlation_root = layout.root / "correlation"
+    store = UtilityStore(correlation_root / "utilities")
+    run_hash = _experiment_hash(config, extra={"workflow": "residual-correlation-v1"})
+    revision = _model_revision(config) + ":paper-specified"
+    actions = resolve_time_peft_actions(
+        tuple(str(value) for value in config.experiment.actions),
+        update_steps=int(config.experiment.update_steps),
+    )
+    generated = 0
+    templates: dict[tuple[int, int], AdaptableForecaster] = {}
+    existing = {record.key for record in store.records()}
+    training = _training_config(config)
+    if not analyze_only:
+        for manifest in manifests:
+            episode = repository.load(manifest.episode_id)
+            channels = int(episode.support.x.shape[1])
+            template_key = (manifest.horizon, channels)
+            if template_key not in templates:
+                seed_everything(0)
+                templates[template_key] = _build_template(
+                    config,
+                    manifest.horizon,
+                    channels=channels,
+                )
+            template = templates[template_key]
+            pending: list[tuple[Any, int]] = []
+            for action in actions:
+                for seed_value in config.experiment.seeds:
+                    seed = int(seed_value)
+                    key = (
+                        manifest.dataset,
+                        manifest.horizon,
+                        manifest.episode_id,
+                        action.action_id,
+                        seed,
+                        run_hash,
+                        revision,
+                        manifest.preprocessing_hash,
+                    )
+                    if key not in existing:
+                        pending.append((action, seed))
+            if not pending:
+                continue
+            evidence, evidence_time = _extract_correlation_evidence_timed(
+                episode.support,
+                template,
+                device=str(config.device),
+                max_lag=int(config.correlation.max_lag),
+            )
+            for action, seed in pending:
+                record = evaluate_action(
+                    template,
+                    episode,
+                    action,
+                    evidence,
+                    seed=seed,
+                    config=training,
+                    config_hash=run_hash,
+                    model_revision=revision,
+                    device=str(config.device),
+                    evidence_wall_time_s=evidence_time,
+                )
+                store.append(record)
+                existing.add(record.key)
+                generated += 1
+
+    episode_ids = {manifest.episode_id for manifest in manifests}
+    records = store.records(
+        episode_ids=episode_ids,
+        action_ids={action.action_id for action in actions},
+        statuses={"ok"},
+        config_hash=run_hash,
+        model_revision=revision,
+    )
+    expected_records = expected * len(actions) * len(config.experiment.seeds)
+    if len(records) != expected_records:
+        raise typer.BadParameter(
+            f"Expected {expected_records} successful matched records, found {len(records)}. "
+            "Resume the benchmark without --analyze-only; failed actions remain explicit."
+        )
+    router_config = CorrelationRouterConfig(
+        probability_threshold=float(config.correlation.probability_threshold),
+        min_relative_benefit=float(config.correlation.minimum_relative_benefit),
+        noninferiority_margin=float(config.correlation.get("noninferiority_margin", 0.01)),
+        random_state=int(config.correlation.get("random_state", 17)),
+    )
+    report = evaluate_correlation_lodo(records, config=router_config)
+    report_dir = correlation_root / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    _write_correlation_report(report_dir, report, records, config)
+    _record_run(
+        layout,
+        "run-correlation-benchmark",
+        config,
+        extra={"workflow": "residual-correlation-v1"},
+    )
+    typer.echo(
+        f"Generated {generated} records; mean per-unit relative MSE "
+        f"{report.comparison.relative_mse_difference:+.2%}; end-to-end time reduction "
+        f"{report.comparison.end_to_end_time_reduction_fraction:+.2%}. "
+        f"Report: {report_dir / 'correlation_benchmark.md'}"
+    )
+
+
 @app.command("prepare-data")
 def prepare_data(
     config_name: str = typer.Option("config", "--config"),
@@ -321,9 +476,7 @@ def reproduce(
     existing = {record.key for record in store.records()}
     revision = _model_revision(config)
     for episode in episodes:
-        evidence, evidence_time = _extract_evidence_timed(
-            episode.support, template, device="cpu"
-        )
+        evidence, evidence_time = _extract_evidence_timed(episode.support, template, device="cpu")
         for action in actions:
             for seed_value in config.experiment.seeds:
                 seed = int(seed_value)
@@ -626,7 +779,13 @@ def _layout(config: DictConfig) -> ArtifactLayout:
     return layout
 
 
-def _build_template(config: DictConfig, horizon: int) -> AdaptableForecaster:
+def _build_template(
+    config: DictConfig,
+    horizon: int,
+    *,
+    channels: int | None = None,
+    force_mvp_adapters: bool = False,
+) -> AdaptableForecaster:
     if str(config.model.kind) == "tiny":
         backbone = TinyBackbone(
             d_model=int(config.model.d_model),
@@ -647,12 +806,21 @@ def _build_template(config: DictConfig, horizon: int) -> AdaptableForecaster:
         )
     else:
         raise ValueError(f"Unknown model kind: {config.model.kind}")
-    return AdaptableForecaster(backbone)
+    implementation = (
+        "mvp" if force_mvp_adapters else str(config.model.get("adapter_implementation", "mvp"))
+    )
+    return AdaptableForecaster(
+        backbone,
+        channels=channels,
+        adapter_implementation=implementation,
+        frequency_top_k=int(config.model.get("frequency_top_k", 3)),
+        adapter_dropout=float(config.model.get("adapter_dropout", 0.0)),
+    )
 
 
 def _build_source_head_template(config: DictConfig, horizon: int) -> AdaptableForecaster:
     if str(config.model.kind) == "tiny":
-        return _build_template(config, horizon)
+        return _build_template(config, horizon, force_mvp_adapters=True)
     if str(config.model.kind) != "moment":
         raise ValueError(f"Unknown model kind: {config.model.kind}")
     backbone = MomentBackbone(
@@ -699,13 +867,196 @@ def _extract_evidence_timed(
     device: str,
 ) -> tuple[Any, float]:
     target = torch.device(device)
-    if target.type == "cuda":
-        torch.cuda.synchronize(target)
-    started = time.perf_counter()
-    evidence = extract_evidence(support, template, device=target)
-    if target.type == "cuda":
-        torch.cuda.synchronize(target)
-    return evidence, time.perf_counter() - started
+    with _inputs_placed_for_evidence(support, template, target) as placed_support:
+        if target.type == "cuda":
+            torch.cuda.synchronize(target)
+        started = time.perf_counter()
+        evidence = extract_evidence(placed_support, template, device=target)
+        if target.type == "cuda":
+            torch.cuda.synchronize(target)
+        elapsed = time.perf_counter() - started
+    return evidence, elapsed
+
+
+def _extract_correlation_evidence_timed(
+    support: Any,
+    template: AdaptableForecaster,
+    *,
+    device: str,
+    max_lag: int,
+) -> tuple[Any, float]:
+    target = torch.device(device)
+    with _inputs_placed_for_evidence(support, template, target) as placed_support:
+        if target.type == "cuda":
+            torch.cuda.synchronize(target)
+        started = time.perf_counter()
+        evidence = extract_correlation_evidence(
+            placed_support,
+            template,
+            device=target,
+            max_lag=max_lag,
+        )
+        if target.type == "cuda":
+            torch.cuda.synchronize(target)
+        elapsed = time.perf_counter() - started
+    return evidence, elapsed
+
+
+@contextmanager
+def _inputs_placed_for_evidence(
+    support: Any,
+    template: AdaptableForecaster,
+    target: torch.device,
+) -> Iterator[Any]:
+    """Place immutable support tensors and a template outside the timed region."""
+
+    first_parameter = next(template.parameters(), None)
+    original_device = first_parameter.device if first_parameter is not None else target
+    was_training = template.training
+    original_flags = tuple(parameter.requires_grad for parameter in template.parameters())
+    try:
+        template.to(target)
+        placed_support = (
+            replace(
+                support,
+                x=support.x.to(target),
+                y=support.y.to(target),
+                mask=support.mask.to(target),
+            )
+            if type(support) is SupportView
+            else support
+        )
+        yield placed_support
+    finally:
+        try:
+            template.to(original_device)
+        finally:
+            template.train(was_training)
+            for parameter, requires_grad in zip(
+                template.parameters(), original_flags, strict=True
+            ):
+                parameter.requires_grad_(requires_grad)
+
+
+def _write_correlation_report(
+    output: Path,
+    report: Any,
+    records: list[Any],
+    config: DictConfig,
+) -> None:
+    """Write machine-readable and human-readable matched benchmark reports."""
+
+    route_counts = dict(report.route_counts)
+    hidden_size = int(config.model.get("d_model", 768))
+    analytical: dict[str, object] = {}
+    folds_by_dataset = {fold.heldout_dataset: fold for fold in report.folds}
+    datasets = sorted({record.dataset for record in records})
+    for dataset in datasets:
+        dataset_records = [record for record in records if record.dataset == dataset]
+        base_records = [record for record in dataset_records if record.action_id == "L"]
+        fold = folds_by_dataset.get(dataset)
+        if not base_records or fold is None:
+            continue
+        dataset_routes = dict(fold.route_counts)
+        routed_episodes = max(int(fold.episodes), 1)
+        frequency_rate = (
+            dataset_routes.get("LF", 0) + dataset_routes.get("LFC", 0)
+        ) / routed_episodes
+        channel_rate = (
+            dataset_routes.get("LC", 0) + dataset_routes.get("LFC", 0)
+        ) / routed_episodes
+        channels = int(round(base_records[0].evidence.get("channels", 1.0)))
+        fixed = int(
+            round(sum(row.trainable_parameters for row in base_records) / len(base_records))
+        )
+        savings = paper_time_peft_parameter_savings(
+            hidden_size,
+            channels,
+            frequency_activation_rate=frequency_rate,
+            channel_activation_rate=channel_rate,
+            fixed_trainable_parameters=fixed,
+        )
+        analytical[dataset] = asdict(savings)
+
+    payload = report.to_dict()
+    payload["implementation_label"] = str(config.claim.implementation_label)
+    payload["official_code_verified"] = bool(config.claim.official_code_verified)
+    payload["analytical_parameter_savings"] = analytical
+    atomic_write_json(output / "correlation_benchmark.json", payload)
+
+    fold_lines = []
+    for fold in report.folds:
+        fold_lines.append(
+            "| "
+            + " | ".join(
+                (
+                    fold.heldout_dataset,
+                    str(fold.episodes),
+                    f"{fold.router.mse:.6g}",
+                    f"{fold.baseline.mse:.6g}",
+                    f"{fold.comparison.relative_mse_difference:+.2%}",
+                    f"{fold.comparison.end_to_end_time_reduction_fraction:+.2%}",
+                    f"{fold.comparison.trainable_parameter_reduction_fraction:+.2%}",
+                    ", ".join(f"{key}:{value}" for key, value in fold.route_counts.items()),
+                )
+            )
+            + " |"
+        )
+    markdown = "\n".join(
+        (
+            "# Residual-correlation module-routing benchmark",
+            "",
+            f"Implementation label: **{config.claim.implementation_label}**.",
+            "",
+            "> This is a paper-specified reimplementation, not an official Time-PEFT "
+            "reproduction. The public paper omits code and several run-level hyperparameters.",
+            "",
+            "## Overall matched result",
+            "",
+            "| Routed MSE | Always-on L+F+C MSE | Mean per-unit relative MSE | "
+            "End-to-end time reduction | "
+            "Trainable-parameter reduction |",
+            "| ---: | ---: | ---: | ---: | ---: |",
+            f"| {report.router.mse:.6g} | {report.baseline.mse:.6g} | "
+            f"{report.comparison.relative_mse_difference:+.2%} | "
+            f"{report.comparison.end_to_end_time_reduction_fraction:+.2%} | "
+            f"{report.comparison.trainable_parameter_reduction_fraction:+.2%} |",
+            "",
+            f"Routes across {report.episodes} held-out episodes: "
+            + ", ".join(f"{key}={value}" for key, value in route_counts.items())
+            + ".",
+            "",
+            "The routed time includes one frozen support forecast, correlation extraction, "
+            "routing, and adaptation. The always-on baseline includes adaptation only. "
+            "Offline exhaustive sweeps used to fit and evaluate the LODO router are research "
+            "cost and are retained separately in the utility store.",
+            "",
+            "Routed and baseline MSE are descriptive means over matched seed runs. The "
+            "relative-MSE estimand first averages seeds within each "
+            "dataset/horizon/episode, computes a paired relative difference for that unit, "
+            "and then gives every unit equal weight.",
+            "",
+            "## Leave-one-dataset-out folds",
+            "",
+            "| Held-out dataset | Episodes | Routed MSE | L+F+C MSE | Mean per-unit "
+            "relative MSE | "
+            "Time reduction | Parameter reduction | Routes |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            *fold_lines,
+            "",
+            "## Interpretation guard",
+            "",
+            f"The point noninferiority diagnostic uses the configured "
+            f"{report.noninferiority_margin:.2%} relative-MSE margin. A CPU smoke run "
+            "validates plumbing only; a research claim additionally requires the paired "
+            "uncertainty analysis described in docs/EXPERIMENT.md and GPU results with a "
+            "provenance-checked source head and all preregistered seeds.",
+            "",
+            "Analytical adapter-parameter calculations are in `correlation_benchmark.json`.",
+            "",
+        )
+    )
+    (output / "correlation_benchmark.md").write_text(markdown, encoding="utf-8")
 
 
 def _controller_config(config: DictConfig) -> ControllerTrainingConfig:
@@ -757,9 +1108,7 @@ def _middle_manifests(manifests: list[Any]) -> list[Any]:
     ]
 
 
-def _oracle_episode_ids(
-    path: str | Path, config_hash: str, model_revision: str
-) -> set[str] | None:
+def _oracle_episode_ids(path: str | Path, config_hash: str, model_revision: str) -> set[str] | None:
     target = Path(path)
     if not target.exists():
         return None

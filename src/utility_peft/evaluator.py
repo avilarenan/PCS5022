@@ -161,6 +161,9 @@ def _evaluate_once(
                 horizon,
                 use_amp=use_amp,
             )
+            # The profiler observes one optimization step; records represent
+            # the complete fixed-budget adaptation run.
+            flops *= action.update_steps
 
     adapted = _query_metrics(model, episode, device, config.query_batch_size)
     if device.type == "cuda":

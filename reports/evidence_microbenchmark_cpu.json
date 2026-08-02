@@ -1,0 +1,10 @@
+{
+  "batch": 64,
+  "channels": 21,
+  "correlation_max_lag": 8,
+  "correlation_suite_median_s": 0.020181952000712045,
+  "gaussian_te_lag1_median_s": 0.08921634800208267,
+  "length": 96,
+  "note": "Conservative implementation benchmark: the correlation suite evaluates all requested lags, while the TE proxy evaluates lag 1 only. Both are quadratic in channel count here; correlation uses batched tensor operations and TE performs ordered-pair regression solves.",
+  "te_over_correlation_speed_ratio": 4.42060054443371
+}

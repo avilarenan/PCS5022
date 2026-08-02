@@ -9,8 +9,13 @@ __pycache__/
 htmlcov/
 
 # Research data and generated artifacts are reproducible but not versioned.
-data/
+/data/
 artifacts/
 outputs/
 multirun/
 .cache/
+/tmp/
+*.openai-download-*
+
+# Keep the canonical paper link in papers/README.md; local PDF copies are not versioned.
+/papers/*.pdf
