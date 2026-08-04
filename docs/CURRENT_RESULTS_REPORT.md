@@ -114,6 +114,18 @@ We kept two experimental lanes separate:
    windows, support-only routing, fixed-update adaptation, then 128 query windows.
    The target dataset is excluded from every leave-one-dataset-out gate fit.
 
+### 2.1 Training conditions at a glance
+
+![MOMENT and PEFT layers under four source-head and target-training conditions](assets/moment-peft-training-conditions.png)
+
+*Figure 1. Gray blocks are frozen, blue blocks are trained before the target,
+orange blocks are trained on target data, purple diamonds are hard discrete
+routers, and dashed blocks are optional modules. Case A is the completed episodic
+router setup; B and C are proposed source-head diagnostics; D is the separate
+conventional Time-PEFT protocol. The source-training and target-use boxes annotate
+when components are trained—they are not additional neural-network layers. Query
+windows remain evaluation-only in every case.*
+
 These lanes answer different questions and their MSE values must not be pooled.
 No official author implementation was publicly available when this snapshot was
 prepared. All local results are therefore labeled **paper-specified Time-PEFT
