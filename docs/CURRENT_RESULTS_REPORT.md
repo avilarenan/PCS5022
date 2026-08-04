@@ -254,14 +254,21 @@ shell environment. The cached ECG work remained valid, and the synthetic phase w
 resumed manually. This created idle calendar time but did not change either result
 matrix.
 
-| Dataset | LoRA MSE | `LFC` MSE | `LFC` improvement over LoRA |
-| --- | ---: | ---: | ---: |
-| ECGCA515 | 0.146785 | 0.123508 | +15.86% |
-| CellCycle | 0.236480 | 0.250609 | -5.97% |
-| DoublePendulum | 0.009278 | 0.014776 | -59.27% |
-| Hopfield | 0.304396 | 0.264376 | +13.15% |
-| Lorenz | 0.182985 | 0.212302 | -16.02% |
-| LorenzCoupled | 0.324336 | 0.296777 | +8.50% |
+| Dataset | Our LoRA MSE | Paper LoRA MSE | Our `LFC` MSE | Paper Time-PEFT MSE | Our `LFC` improvement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ECGCA515 | 0.146785 | 0.199 | 0.123508 | 0.125 | +15.86% |
+| CellCycle | 0.236480 | 0.514 | 0.250609 | 0.249 | -5.97% |
+| DoublePendulum | 0.009278 | 0.907 | 0.014776 | 0.817 | -59.27% |
+| Hopfield | 0.304396 | 0.499 | 0.264376 | 0.244 | +13.15% |
+| Lorenz | 0.182985 | 0.423 | 0.212302 | 0.134 | -16.02% |
+| LorenzCoupled | 0.324336 | 0.619 | 0.296777 | 0.228 | +8.50% |
+
+The paper columns are the original horizon-96 MSE values reported by
+[Time-PEFT](https://openreview.net/forum?id=n8seTOinYs). They are reference values
+only and never participated in local LR selection or test evaluation. The paper
+reports Time-PEFT below LoRA in all six displayed cells; our reduced reproduction
+recovers that direction on ECGCA515, Hopfield, and LorenzCoupled, but not on
+CellCycle, DoublePendulum, or Lorenz.
 
 Full Time-PEFT won 3/6 cells. ECGCA515 is the most encouraging parity anchor:
 local `LFC` MSE 0.123508 is close to the paper's 0.125 reference, although local
