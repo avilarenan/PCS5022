@@ -336,31 +336,41 @@ router captured only about 49% and 47% of `L`'s accuracy gain over `LFC`. The
 histogram-matched random comparison is descriptive and global; its randomization
 interval is not a sampling confidence interval or a fold-specific permutation test.
 
-### 8.3 Dataset-level routed effect versus `LFC`
+### 8.3 Dataset-level routed effect versus `LFC` and `L`
 
 These are equal-seed fold means of the unit-level relative-MSE estimand, not ratios
-of pooled raw MSE across datasets.
+of pooled raw MSE across datasets. Negative values mean that routing lowered MSE;
+positive values mean that routing was worse than the named comparator.
 
-| Held-out dataset | 100 updates | 300 updates |
-| --- | ---: | ---: |
-| CellCycle | -0.53% | -0.06% |
-| DoublePendulum | -41.48% | -46.95% |
-| ECGCA115 | -40.60% | +0.00% |
-| ECGCA515 | -13.07% | +4.65% |
-| ETTh1 | +4.30% | -24.81% |
-| ETTh2 | -11.67% | -11.98% |
-| ETTm1 | -16.80% | -13.56% |
-| ETTm2 | +4.06% | -9.11% |
-| Exchange | -22.55% | -21.74% |
-| Hopfield | -49.11% | -47.86% |
-| Lorenz | -31.84% | -24.11% |
-| LorenzCoupled | -6.60% | -12.35% |
-| Weather | -0.79% | +10.96% |
+| Held-out dataset | vs `LFC`, 100 updates | vs `L`, 100 updates | vs `LFC`, 300 updates | vs `L`, 300 updates |
+| --- | ---: | ---: | ---: | ---: |
+| CellCycle | -0.53% | +248.77% | -0.06% | +254.38% |
+| DoublePendulum | -41.48% | +426.89% | -46.95% | +243.35% |
+| ECGCA115 | -40.60% | +2.05% | +0.00% | +198.33% |
+| ECGCA515 | -13.07% | -0.51% | +4.65% | +0.43% |
+| ETTh1 | +4.30% | +36.53% | -24.81% | +0.00% |
+| ETTh2 | -11.67% | +10.85% | -11.98% | +10.92% |
+| ETTm1 | -16.80% | +80.89% | -13.56% | +72.32% |
+| ETTm2 | +4.06% | +10.90% | -9.11% | +0.00% |
+| Exchange | -22.55% | +4.17% | -21.74% | +2.49% |
+| Hopfield | -49.11% | +0.00% | -47.86% | +6.89% |
+| Lorenz | -31.84% | -7.18% | -24.11% | -20.42% |
+| LorenzCoupled | -6.60% | +460.38% | -12.35% | +170.55% |
+| Weather | -0.79% | +53.71% | +10.96% | +47.31% |
+| **Overall equal-unit mean** | **-17.44%** | **+102.11%** | **-15.15%** | **+75.89%** |
 
-The overall direction is stable, but individual datasets are not. Weather becomes
-clearly worse at 300 updates, while ETTh1 becomes much better. This variability is
-consistent with budget-dependent adaptation utility and argues against a router
-that ignores the adaptation budget.
+The `LFC` columns make routing look broadly favorable, whereas the `L` columns
+expose the mechanism failure. At 100 updates the router beat `L` only on ECGCA515
+and Lorenz; at 300 updates it beat `L` only on Lorenz. Exact zeros occur when the
+router selected `L` for every episode in that dataset. The very large positive
+effects arise when an optional route failed badly on one episode whose `L` error
+was small; the paired relative estimand intentionally gives that episode equal
+weight rather than letting high-scale datasets dominate.
+
+The effect against `LFC` is directionally stable overall, but individual datasets
+are not. Weather becomes worse at 300 updates, while ETTh1 becomes much better.
+This variability is consistent with budget-dependent adaptation utility and argues
+against a router that ignores the adaptation budget.
 
 ### 8.4 Direct mechanism diagnostics
 
