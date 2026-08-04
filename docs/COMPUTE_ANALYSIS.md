@@ -28,8 +28,8 @@ compare ratios only after checking the convention.
 
 ## Exact adapter parameter formulas
 
-Section 4.5 of the accepted paper excludes bias and normalization parameters and
-gives
+Section 4.5 of the accepted paper explicitly excludes bias and normalization
+parameters from its simplified formulas and gives
 
 \[
 P_F=h_1h_2
@@ -42,8 +42,11 @@ P_C=r_c(h_1+h_2)+C r_c h_1
 \]
 
 for the shared channel down-projection plus \(C\) channel-specific up-projections.
-The repository's paper adapters use bias-free projections, so these formulas are
-exact for those adapter tensors.
+The router's historical `paper` variant uses bias-free projections and
+non-affine LayerNorm, so these formulas are exact for that variant. The separate
+`paper_count_inferred` reproduction variant adds ordinary projection biases and
+affine LayerNorm because those terms exactly reconcile the paper's rounded Table
+5 count. Bias/affine presence is inferred from the table, not stated by the paper.
 
 For square q/k/v attention projections, LoRA contributes
 
@@ -98,9 +101,11 @@ For MOMENT-base, \(h_1=768\), so \(h_1^2=589{,}824\):
 | 21 | Weather | 589,824 | 6,782,976 | 7,372,800 |
 
 As a sanity check, the paper reports approximately 2.360M trainable parameters for
-LoRA and 4.429M for Time-PEFT on three-channel Lorenz. The analytical optional
-increment above is 2.064M; the small remaining difference is consistent with
-terms excluded from the paper's simplified formula.
+LoRA and 4.429M for Time-PEFT on three-channel Lorenz. The weight-only optional
+increment is 2,064,384. Frequency bias (768), shared-down bias (384), three
+channel-up biases (3 x 768), and affine LayerNorm (2 x 768) add 4,992, producing
+an optional increment of 2,069,376 and a horizon-averaged total of 4,428,880.
+That rounds exactly to the reported 4.429M.
 
 ## Expected active-parameter saving
 
@@ -206,6 +211,101 @@ An inactive adapter must be skipped in the forward graph to realize these saving
 Setting `requires_grad=False` while still executing the adapter saves optimizer and
 weight-gradient work but not its forward or activation-gradient work. The current
 model branches on `frequency_enabled` and `channel_enabled`.
+
+## Paper-style reproduction workload
+
+The conventional Time-PEFT-versus-LoRA reproduction has a different compute
+boundary from the episodic router benchmark. It trains on every stride-one
+target-train window, evaluates every target-validation window after each epoch,
+selects one learning rate per method from validation, and evaluates the selected
+checkpoints on the target test split once. None of this tuning cost should be
+reported as router deployment latency.
+
+For the uncapped ECGCA515-h96 development anchor, the 820,000 timestamps and
+chronological 70/10/20 reconstruction produce:
+
+| Split | Windows | Batches at 128 |
+| --- | ---: | ---: |
+| Train | 573,809 | 4,483 per epoch |
+| Validation | 81,905 | 640 per epoch |
+| Test | 163,905 | 1,281 per selected model |
+
+The primary grid contains two methods, three learning rates, and three seeds:
+18 tuning trials. If $e_i$ is the number of completed epochs in trial $i$,
+the exact training and validation batch counts are
+
+\[
+N_{\mathrm{train}}=4{,}483\sum_{i=1}^{18} e_i,
+\qquad
+N_{\mathrm{validation}}=640\sum_{i=1}^{18} e_i.
+\]
+
+The final test stage performs $2\times3\times1{,}281=7{,}686$ forward
+batches. With patience 3 and minimum delta zero, four epochs per trial is the
+theoretical minimum if the first epoch is best; continuing small improvements
+can keep a low-rate trial alive through the 100-epoch maximum.
+
+### A40 planning measurement
+
+A local planning microbenchmark used the pinned MOMENT-base model, ECGCA515,
+lookback/horizon 96, FP32, batch 128, and an otherwise idle NVIDIA A40. It
+measured model work and the lazy CPU-window/device-placement boundary
+separately, then combined them. At measurement time the MOMENT wrapper used
+forecast-head dropout 0.0; remeasure after the primary 0.1 field is wired into
+runtime construction. The figures below are sizing estimates, not a comparison
+between dropout assumptions:
+
+| Method | Train batch | Validation batch | Estimated complete epoch |
+| --- | ---: | ---: | ---: |
+| `L` | about 0.404 s | about 0.179 s | about 32.1 min |
+| `LFC` | about 0.414 s | about 0.183 s | about 32.9 min |
+
+Peak allocated GPU memory was about 8.36 GiB. Setup was only a few seconds per
+trial. These numbers are capacity-planning measurements, not synchronized paper
+timing endpoints; allow roughly 15% variation for host load, allocation, and
+device conditions.
+
+One mean completed epoch across the full 18-trial grid is approximately 9.75
+GPU-hours. Useful planning points are:
+
+| Mean completed epochs per trial | Approximate tune time |
+| ---: | ---: |
+| 4, theoretical minimum | 39 hours |
+| 5 | 49 hours |
+| 10 | 98 hours / 4.1 days |
+| 20 | 195 hours / 8.1 days |
+| 50 | 20 days |
+| 100, maximum | 41 days |
+
+The full untouched-test pass is approximately 23--30 minutes; report rendering
+is negligible.
+
+### Checkpoint storage and interruption safety
+
+The final tuning artifact stores validation-selected trainable tensors. For
+three seeds its raw FP32 payload is
+
+\[
+3\left(1{,}327{,}200+4{,}283{,}616\right)\times4
+=67{,}329{,}792\ \text{bytes},
+\]
+
+or about 64.2 MiB before serialization overhead; the expected file is about
+64.4 MiB. Atomic resume also retains the best trainable state for each of the
+18 method/LR/seed trials. Its raw successful-checkpoint payload is three times
+the selected payload, about 192.6 MiB, because all three LRs are cached. The
+trial cache plus final tune artifact therefore requires about 256.8 MiB before
+small serialization overhead. Result JSON, report, and run manifests add less
+than one MiB. The input EDF and cached foundation checkpoint are existing
+shared inputs rather than per-run artifacts.
+
+Each trial cache entry is atomically replaced and keyed by config fingerprint,
+dataset and source hash, method, learning rate, seed, and initialized-template
+fingerprint. The cache rejects mismatches, and LR selection is performed only
+after the exact Cartesian grid is reconstructed. Preserve these entries until
+the final tuning artifact and metadata hashes are validated. This per-trial
+resume boundary is a scientific requirement: a retry must recover the same
+trial, not silently change an initialization, dataset, or protocol.
 
 ## Correlation-selector cost
 

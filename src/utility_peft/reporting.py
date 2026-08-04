@@ -18,6 +18,7 @@ def build_report(
     lodo_metrics_path: str | Path | None = None,
     parity_manifest_path: str | Path | None = None,
     episode_ids: set[str] | None = None,
+    seeds: set[int] | None = None,
     config_hash: str | None = None,
     model_revision: str | None = None,
 ) -> Path:
@@ -25,6 +26,7 @@ def build_report(
     output.mkdir(parents=True, exist_ok=True)
     records = store.records(
         episode_ids=episode_ids,
+        seeds=seeds,
         config_hash=config_hash,
         model_revision=model_revision,
     )

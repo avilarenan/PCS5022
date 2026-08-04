@@ -2,8 +2,9 @@
 
 The accepted ICML 2026 Time-PEFT paper used as research context is:
 
-Patara Trirat et al., “Time-PEFT: Temporal and Multi-Channel Aware Parameter-Efficient
-Fine-Tuning for Time Series Forecasting,” OpenReview forum `n8seTOinYs`.
+Jihye Na, Patara Trirat, Chanyoung Park, and Jae-Gil Lee, “Time-PEFT: Temporal
+and Multichannel Complexity-Based Fine-Tuning for Time-Series Foundation Models,”
+OpenReview forum `n8seTOinYs`.
 
 Canonical entry: <https://openreview.net/forum?id=n8seTOinYs>
 

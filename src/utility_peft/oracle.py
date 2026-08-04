@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 
 from utility_peft.actions import MVP_ACTIONS
+from utility_peft.matching import require_exact_seed_pairing
 from utility_peft.types import UtilityRecord
 from utility_peft.utils import atomic_write_json
 
@@ -50,6 +51,7 @@ def evaluate_oracle_gate(
     seed: int = 0,
     config_hash: str = "",
     model_revision: str = "",
+    expected_seeds: Sequence[int] | None = None,
 ) -> OracleGateResult:
     mvp_ids = {action.action_id for action in MVP_ACTIONS}
     valid = [
@@ -61,34 +63,38 @@ def evaluate_oracle_gate(
     ]
     if not valid:
         raise ValueError("Oracle gate requires successful MVP utility records")
-    grouped: dict[tuple[str, str], list[float]] = {}
+    required_actions = tuple(sorted(mvp_ids))
+    episode_records: dict[str, dict[str, list[UtilityRecord]]] = {}
     episode_strata: dict[str, tuple[str, int]] = {}
-    episode_seeds: dict[str, set[int]] = {}
     for record in valid:
-        grouped.setdefault((record.episode_id, record.action_id), []).append(
-            record.normalized_gain
-        )
+        episode_records.setdefault(record.episode_id, {}).setdefault(
+            record.action_id, []
+        ).append(record)
         episode_strata.setdefault(record.episode_id, (record.dataset, record.horizon))
-        episode_seeds.setdefault(record.episode_id, set()).add(record.seed)
+
+    episode_seeds = {
+        episode_id: require_exact_seed_pairing(
+            actions,
+            required_actions,
+            episode_label=episode_id,
+            seed_getter=lambda record: record.seed,
+            expected_seeds=expected_seeds,
+        )
+        for episode_id, actions in sorted(episode_records.items())
+    }
 
     episode_actions: dict[str, dict[str, tuple[float, float]]] = {}
-    for (episode_id, action_id), values in grouped.items():
-        array = np.asarray(values, dtype=np.float64)
-        standard_error = float(array.std(ddof=1) / math.sqrt(array.size)) if array.size > 1 else 0.0
-        episode_actions.setdefault(episode_id, {})[action_id] = (
-            float(array.mean()),
-            standard_error,
-        )
-    required_actions = mvp_ids
-    incomplete = [
-        episode_id
-        for episode_id, values in episode_actions.items()
-        if set(values) != required_actions
-    ]
-    if incomplete:
-        raise ValueError(
-            f"Oracle gate requires A0-A6 for every episode; incomplete: {incomplete[:5]}"
-        )
+    for episode_id, actions in episode_records.items():
+        for action_id, records_for_action in actions.items():
+            values = [record.normalized_gain for record in records_for_action]
+            array = np.asarray(values, dtype=np.float64)
+            standard_error = (
+                float(array.std(ddof=1) / math.sqrt(array.size)) if array.size > 1 else 0.0
+            )
+            episode_actions.setdefault(episode_id, {})[action_id] = (
+                float(array.mean()),
+                standard_error,
+            )
 
     near_ties: dict[str, tuple[str, ...]] = {}
     primary_winners: dict[str, str] = {}
@@ -145,7 +151,7 @@ def evaluate_oracle_gate(
         means[sample] = float(np.mean(stratum_means))
     low, high = np.quantile(means, [0.025, 0.975])
     positive = float(low) > 0
-    seed_count = min(len(values) for values in episode_seeds.values())
+    seed_count = min(len(seeds) for seeds in episode_seeds.values())
     screen_passed = heterogeneous and float(regrets.mean()) > 0
     confirmation_ready = seed_count >= 3
     return OracleGateResult(

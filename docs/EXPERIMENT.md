@@ -39,17 +39,18 @@ The preregistered hypotheses are:
    adaptation together take less wall time than `LFC` adaptation. Active trainable
    parameters and measured adaptation FLOPs are secondary efficiency endpoints.
 3. **Routing value.** The router beats the best source-fixed arm among `L`, `LF`,
-   and `LC`, rather than obtaining a favorable result merely because one smaller
-   arm is globally sufficient.
+   `LC`, and `LFC`, rather than obtaining a favorable result merely because one
+   fixed arm is globally sufficient.
 4. **Non-degenerate selection.** At least two masks are selected across held-out
    units, and the accuracy result is not produced by routing every unit to `LFC`.
 
 The point-estimate fields `relative_mse_difference` and
-`noninferior_within_margin` implement the unit-level estimand above and the
-configured margin. They are development diagnostics, not sufficient for a research
-claim without the paired interval. A pilot is promising, but not confirmatory, when
-median relative MSE degradation is at most two percent and end-to-end time falls by
-at least ten percent.
+`point_noninferior_within_margin` implement the unit-level estimand above and the
+configured margin; `noninferior_within_margin` is the paired-interval decision.
+Point estimates are development diagnostics, not sufficient for a research claim
+without the paired interval. A pilot is promising, but not confirmatory, when mean
+unit-level relative MSE degradation is at most two percent and end-to-end time falls
+by at least ten percent.
 
 ## Accepted-paper audit and deliberate deviations
 
@@ -307,8 +308,8 @@ The four-arm table provides three fixed controls (`L`, `LF`, `LC`) and the
 always-on baseline (`LFC`). At minimum report:
 
 - correlation router versus `LFC`;
-- correlation router versus the best source-fixed smaller arm among `L`, `LF`, and
-  `LC`, chosen without the target;
+- correlation router versus the best source-fixed arm among `L`, `LF`, `LC`, and
+  `LFC`, chosen without the target;
 - independent frequency/channel gate accuracy and one-class fallbacks;
 - raw input-correlation features versus frozen-residual correlation features;
 - `max_lag` and support-size sensitivity;

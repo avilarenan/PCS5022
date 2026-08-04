@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -8,10 +9,12 @@ import pandas as pd
 import pytest
 import torch
 
+import utility_peft.data.datasets as datasets_module
 from utility_peft.data.datasets import (
     DatasetSeries,
     DatasetSplit,
     available_datasets,
+    dysts_reproduction_provenance,
     load_dataset_manifest,
     load_dataset_series,
 )
@@ -53,6 +56,91 @@ def test_compatible_chaotic_generators_are_finite_and_aliasable(
     assert torch.isfinite(canonical.values).all()
     assert torch.equal(canonical.values, aliased.values)
     assert canonical.sha256 == aliased.sha256
+
+
+@pytest.mark.parametrize(
+    ("name", "channels", "expected_sha256"),
+    [
+        ("Lorenz", 3, "2bf88a0b63df6fe380fec80b4b125b2cf4761c4d93e91cf071f1bd5b6b25e6aa"),
+        (
+            "CellCycle",
+            6,
+            "2cc1010ff0349abebce3df269be54dc2e0fd7ed4314c7cb386444af1ca9515df",
+        ),
+        (
+            "DoublePendulum",
+            4,
+            "990a3cef99c227a41cd5dcd46a87f41661269fa2dfe6936477f7ed49f25f5aa8",
+        ),
+        ("Hopfield", 6, "f661d0aa3d5f44fbaae3e42772bea837203ded23369ddc8e895d005c37f2a2ec"),
+        (
+            "LorenzCoupled",
+            6,
+            "942cb5c727a49e45ad6ccb53da21ed84b95730f5d3a5af1eaa94d3990a50f729",
+        ),
+    ],
+)
+def test_official_dysts_generators_have_pinned_channel_first_trajectories(
+    tmp_path: Path,
+    name: str,
+    channels: int,
+    expected_sha256: str,
+) -> None:
+    series = load_dataset_series(
+        name,
+        tmp_path,
+        synthetic_length=80,
+        synthetic_generator="dysts",
+        synthetic_random_seed=0,
+        synthetic_pts_per_period=100,
+    )
+
+    assert series.values.shape == (channels, 80)
+    assert series.sha256 == expected_sha256
+    assert torch.isfinite(series.values).all()
+
+
+def test_dysts_provenance_exposes_effective_numerical_protocol() -> None:
+    provenance = dysts_reproduction_provenance()
+    assert provenance["dysts_version"] == "0.96"
+    assert provenance["trajectory_arguments"]["method"] == "Radau"
+    assert provenance["trajectory_arguments"]["postprocess"] is True
+
+
+def test_materialized_dysts_cache_reuses_exact_tensor_and_preserves_numpy_rng(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    np.random.seed(123)
+    expected_random_values = np.random.random(4)
+    np.random.seed(123)
+    first = load_dataset_series(
+        "Lorenz",
+        tmp_path,
+        synthetic_length=80,
+        synthetic_generator="dysts",
+    )
+    assert np.array_equal(np.random.random(4), expected_random_values)
+    assert len(list((tmp_path / ".utility_peft" / "dysts").rglob("*.pt"))) == 1
+
+    def fail_if_regenerated(*args: object, **kwargs: object) -> torch.Tensor:
+        del args, kwargs
+        raise AssertionError("materialized trajectory was regenerated")
+
+    monkeypatch.setattr(datasets_module, "_generate_dysts_synthetic", fail_if_regenerated)
+    second = load_dataset_series(
+        "Lorenz",
+        tmp_path,
+        synthetic_length=80,
+        synthetic_generator="dysts",
+    )
+    assert torch.equal(first.values, second.values)
+    assert first.sha256 == second.sha256
+
+
+def test_dataset_loader_rejects_unknown_synthetic_generator(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="synthetic_generator"):
+        load_dataset_series("Lorenz", tmp_path, synthetic_generator="approximate")
 
 
 def test_local_weather_csv_is_channels_first_and_hashed(tmp_path: Path) -> None:
@@ -146,6 +234,33 @@ def test_missing_public_dataset_error_explains_both_acquisition_paths(
     with pytest.raises(FileNotFoundError, match="download=True") as caught:
         load_dataset_series("Exchange", tmp_path)
     assert "local_path=" in str(caught.value)
+
+
+def test_manifest_fallback_path_retains_pinned_integrity_checks(tmp_path: Path) -> None:
+    path = tmp_path / "toy.csv"
+    pd.DataFrame({"first": range(4), "second": range(4, 8)}).to_csv(path, index=False)
+    manifest_path = tmp_path / "manifest.yaml"
+    entry = {
+        "family": "test",
+        "aliases": ["toy"],
+        "local_path": "nested/toy.csv",
+        "url": "https://example.invalid/toy.csv",
+        "sha256": "0" * 64,
+        "rows": 4,
+        "channels": 2,
+        "split": {"kind": "ratio", "train": 0.5, "test": 0.25},
+    }
+    manifest = {"schema_version": 1, "datasets": {"Toy": entry}}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        load_dataset_series("Toy", tmp_path, manifest_path=manifest_path)
+
+    entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    entry["rows"] = 5
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="Pinned Toy file must have 5 rows"):
+        load_dataset_series("Toy", tmp_path, manifest_path=manifest_path)
 
 
 def test_dataset_series_rejects_overlapping_partitions() -> None:

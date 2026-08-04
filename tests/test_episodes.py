@@ -61,6 +61,45 @@ def test_query_values_cannot_affect_support_preprocessing(series: torch.Tensor) 
     assert torch.equal(original.support.y, modified.support.y)
 
 
+def test_episode_rejects_non_finite_forecast_targets(series: torch.Tensor) -> None:
+    invalid = series.clone()
+    invalid[0, 16] = torch.nan
+
+    with pytest.raises(ValueError, match="Forecast targets must be finite"):
+        build_episode(
+            invalid,
+            dataset="invalid-target",
+            dataset_family="test",
+            lookback=16,
+            horizon=8,
+            support_size=8,
+            query_size=8,
+            start=0,
+            seed=0,
+        )
+
+
+def test_episode_masks_and_replaces_non_finite_inputs(series: torch.Tensor) -> None:
+    incomplete = series.clone()
+    incomplete[0, 0] = torch.nan
+
+    episode = build_episode(
+        incomplete,
+        dataset="missing-input",
+        dataset_family="test",
+        lookback=16,
+        horizon=8,
+        support_size=8,
+        query_size=8,
+        start=0,
+        seed=0,
+    )
+
+    assert not episode.support.mask[0, 0]
+    assert episode.support.x[0, 0, 0] == 0
+    assert torch.isfinite(episode.support.y).all()
+
+
 def test_chronological_starts_validate_available_length() -> None:
     starts = chronological_starts(
         200,

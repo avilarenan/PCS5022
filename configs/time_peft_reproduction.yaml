@@ -1,0 +1,37 @@
+defaults:
+  - model: moment
+  - experiment: time_peft_reproduction
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/time-peft-reproduction
+  cache: .cache/huggingface
+
+device: cuda
+
+model:
+  # MOMENT has no pretrained long-horizon forecast head. Paper-style target
+  # training therefore starts from a fresh, seed-matched target head.
+  source_head_checkpoint: null
+  allow_random_head: true
+  adapter_implementation: paper_count_inferred
+  frequency_top_k: 3
+  # Dropout appears in the paper's channel-adapter equation, but its rate is
+  # not reported. 0.1 is the explicit primary assumption; run 0.0 sensitivity.
+  adapter_dropout: 0.1
+  # The paper does not report forecast-head dropout. Record the common
+  # TSLib/MOMENT reconstruction default as primary and require a 0.0 sensitivity.
+  head_dropout: 0.1
+
+claim:
+  implementation_label: paper-specified Time-PEFT reimplementation
+  official_code_verified: false
+  paper_id: n8seTOinYs
+  # The base config is reserved for the protocol-locked seven-dataset matrix.
+  # The anchor script overrides this metadata without changing training logic.
+  test_role: confirmatory
+
+hydra:
+  job:
+    chdir: false

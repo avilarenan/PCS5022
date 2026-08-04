@@ -11,11 +11,87 @@ head tuning, LoRA, frequency and channel adapters, FourierFT, and full fine-tuni
 The original LaTeX proposal is preserved under
 [`utility_peft_latex_project/`](utility_peft_latex_project/).
 
-> **Research status: experiment-ready, result pending on GPU.** The historical
-> A40 Utility-PEFT pilot is preserved. The repository now also contains a matched
-> experiment that routes paper-specified frequency and channel modules from
-> support-only residual correlations and compares the route with always-on
-> L+F+C. The included CPU result is a plumbing test, not evidence of superiority.
+> **Research status: full development screen complete; mechanism not supported.**
+> Across all 13 Time-PEFT datasets, the residual-correlation router beat always-on
+> Time-PEFT (`LFC`) at 100 and 300 updates, but it lost decisively to source-fixed
+> LoRA (`L`) and performed worse descriptively than histogram-matched random
+> routing. The result supports selective omission of optional modules, not the
+> proposed learned routing mechanism. See the
+> [current-results report](docs/CURRENT_RESULTS_REPORT.md) for the complete history,
+> controlled results, interpretation, related work, and next experiments.
+
+## Time-PEFT versus LoRA reproduction lane
+
+The accepted ICML 2026 paper, *Time-PEFT: Temporal and Multichannel
+Complexity-Based Fine-Tuning for Time-Series Foundation Models*, reports that
+full Time-PEFT improves MOMENT-base MSE over LoRA by roughly 5.7% to 38.0% on
+seven complex datasets. It does **not** report universal superiority: on the
+six standard datasets, results are generally similar and Time-PEFT is clearly
+better only on Weather. Its temporal and multichannel complexity measures are
+dataset diagnostics and proxies for fine-tuning gain; they do not route
+adapters.
+
+The separate conventional target-train/validation/test workflow is:
+
+```bash
+.venv/bin/utility-peft run-time-peft-reproduction \
+  --config time_peft_reproduction_smoke --stage all
+```
+
+The uncapped workflow compares only `L` (LoRA + target head) with `LFC` (full
+Time-PEFT + target head). It uses a fresh seed-matched forecasting head, a common
+AdamW LR selected from validation across seeds, and one untouched test pass. It
+does not run or compose the router.
+
+The pinned ECGCA515/horizon-96 run is a **development/parity anchor**, for which
+the paper reports MSE 0.199 (LoRA) and 0.125 (Time-PEFT). It may expose major
+implementation or preprocessing discrepancies, but it is not confirmatory
+evidence and cannot establish a general Time-PEFT or routing result. The primary
+reconstruction uses `paper_count_inferred`, channel-adapter dropout 0.1, and
+forecast-head dropout 0.1. Required one-factor sensitivities use the `paper`
+variant, adapter dropout 0.0, and head dropout 0.0. Synthetic reproduction uses
+`dysts==0.96`, length 12,000, seed 0, and `pts_per_period=100`; the package
+version, trajectory length, and default arguments are local assumptions because
+the paper omits them. Generated tensors are materialized once under
+`data/.utility_peft/dysts/`; runtime numerical-library versions, effective
+solver arguments, shapes, and tensor SHA-256 values are bound into the run and
+protocol hashes. Confirmatory labeling is rejected for a reduced matrix or the
+legacy proxy generator.
+
+Before opening any test result from the seven-dataset, three-horizon matrix,
+lock its composed config, implementation hash, splits, seed/LR grid,
+sensitivities, and statistical decision rules. A change after test inspection
+is a new experiment, not a replacement result. See
+[`docs/TIME_PEFT_REPRODUCTION.md`](docs/TIME_PEFT_REPRODUCTION.md).
+
+After the smoke passes, the prepared anchor command is:
+
+```bash
+./scripts/run_time_peft_anchor.sh
+```
+
+This is a long run. ECGCA515-h96 has 573,809 training windows and 18
+method/LR/seed trials. A planning benchmark on the current A40 estimates about
+9.75 GPU-hours per mean completed epoch across the grid: at least about 39
+hours under patience 3, about 98 hours at ten mean epochs, and up to about 41
+days if every trial reaches 100 epochs. Peak allocation was about 8.36 GiB.
+The workflow atomically caches each method/LR/seed trial under its complete
+identity and reconstructs the exact grid on resume; preserve that cache until
+the final tuning artifact has been validated.
+
+When a result is needed within 24 hours, run the separate preliminary screen:
+
+```bash
+./scripts/run_time_peft_budget24.sh
+```
+
+It first evaluates ECGCA515 for at most four epochs per trial under
+`artifacts/time-peft-budget24/ecg`, then evaluates the five chaotic datasets for
+at most eight epochs under `artifacts/time-peft-budget24/synthetic`. Both phases
+use full, uncapped horizon-96 windows, seeds 0/1, `L`/`LFC`, and learning rates
+`1e-3`/`1e-4`. They are explicitly labeled `development-parity`: useful
+preliminary evidence, not a confirmatory reproduction of the complete paper
+matrix.
 
 ## New Experiment: Correlation-Routed Time-PEFT
 
@@ -101,10 +177,13 @@ cross-dataset routing.
 | H3: selective adaptation surpasses the matched baseline | Not supported |
 | H4: selector transfers across held-out datasets | Not supported |
 | Official Time-PEFT parity | Blocked: no public official code located |
+| Paper-style Time-PEFT-versus-LoRA runner | Implemented; reduced h96 development screen complete; full paper matrix not run |
 | Residual correlation evidence and strict support-only API | Implemented |
 | L/LF/LC/LFC matched LODO benchmark and reports | Implemented |
 | Full Time-PEFT 13-dataset manifest/workflow | Implemented |
-| Correlation-routing GPU result | Pending |
+| Correlation-routing five-dataset GPU pilot | Completed |
+| Correlation-routing 13-dataset development result | Completed; beats `LFC`, loses to fixed `L` and random routing |
+| Untouched confirmatory router experiment | Not warranted with the current action bank |
 
 The implementation enforces support/query separation with immutable episode
 manifests. Descriptor extraction, normalization, controller inputs, and action
@@ -230,11 +309,12 @@ retained as offline research/calibration cost and is never presented as deployme
 cost. Deployment time includes the frozen support forecast, evidence extraction,
 routing, and selected adaptation.
 
-The preregistered primary criterion is routed MSE noninferiority within 1% of `LFC`
-together with lower end-to-end adaptation time. Confidence intervals and additional
-controls should be added before a publication claim. The immutable Parquet utility
-store, rather than the aggregate report, retains every paired raw record needed for
-that extension.
+The locked primary criterion was routed MSE noninferiority within 1% of `LFC`
+together with lower end-to-end adaptation time. The completed 13-dataset run beat
+`LFC`, but failed the decisive routing-value control: source-fixed `L` and
+histogram-matched random routing both did better. The immutable Parquet utility
+store retains every paired raw record, while the
+[current-results report](docs/CURRENT_RESULTS_REPORT.md) gives the complete audit.
 
 ## Foundation Model and Baseline Boundary
 
@@ -247,12 +327,14 @@ Transformers is pinned to 4.54.1, and PEFT is pinned to 0.17.1.
 
 MOMENT's foundation checkpoint contains a reconstruction head, not a pretrained
 long-horizon forecasting head. The historical A40 pilot trains horizon-specific
-heads on ETTm2 and excludes ETTm2 from evaluation. The new 13-dataset workflow
-instead trains heads on Electricity, which is outside the target suite. Each
-checkpoint is bound to source-data, preprocessing, split, and target-exclusion
-hashes. Random forecasting heads are allowed only in the synthetic smoke path.
+heads on ETTm2 and excludes ETTm2 from evaluation. The episodic correlation
+workflow instead trains heads on Electricity, which is outside the target suite.
+Each source checkpoint is bound to source-data, preprocessing, split, and
+target-exclusion hashes. The paper-style reproduction deliberately follows a
+different convention: it initializes a fresh target forecasting head per
+dataset/horizon/seed and jointly trains it in both LoRA and Time-PEFT.
 
-As of August 1, 2026, no public official Time-PEFT implementation was found on the
+As of August 2, 2026, no public official Time-PEFT implementation was found on the
 paper pages, author repositories, KAIST DMLab organization, or Hugging Face. The
 historical implementation remains **Time-PEFT-style**, and the new matched stack is
 a **paper-specified Time-PEFT reimplementation**. Neither can claim official
@@ -286,8 +368,8 @@ implementations in one result table.
 
 ## Installation
 
-The tested environment is Python 3.11, PyTorch 2.4.1, CUDA 12.4, and one NVIDIA
-A40 with 46 GB of memory.
+The principal runs used Python 3.11, PyTorch 2.4.1+cu121, and one NVIDIA A40 with
+45.5 GiB of usable memory.
 
 ```bash
 ./scripts/setup_env.sh

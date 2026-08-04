@@ -26,6 +26,45 @@ def test_paper_adapter_parameter_formula_and_shapes() -> None:
     assert torch.count_nonzero(channel.channel_up) > 0
 
 
+def test_count_inferred_variant_matches_paper_table_rounded_increment() -> None:
+    """Biases and affine normalization explain the paper's 4.429M count exactly."""
+
+    width = 768
+    channels = 3
+    frequency = PaperFrequencyAdapter(width, top_k=3, bias=True)
+    channel = PaperChannelAdapter(width, channels, bias=True)
+    normalization = torch.nn.LayerNorm(width, elementwise_affine=True)
+    optional = sum(
+        parameter.numel()
+        for module in (frequency, channel, normalization)
+        for parameter in module.parameters()
+    )
+    assert optional == 2_069_376
+    # Paper Table 5 averages the horizon-specific head size. Together with
+    # Q/K/V LoRA, the fixed term is 2,359,504 parameters.
+    assert round((2_359_504 + optional) / 1_000_000, 3) == 4.429
+
+
+def test_count_inferred_variant_trains_biases_and_affine_norm() -> None:
+    torch.manual_seed(8)
+    template = AdaptableForecaster(
+        TinyBackbone(d_model=16, patch_len=4, depth=1, heads=2, max_horizon=8),
+        channels=3,
+        adapter_implementation="paper_count_inferred",
+    )
+    model = model_for_action(
+        template,
+        resolve_time_peft_actions(("LFC",), update_steps=1)[0],
+    )
+    names = {name for name, value in model.named_parameters() if value.requires_grad}
+    assert "frequency_adapter.projection.bias" in names
+    assert "channel_adapter.shared_down.bias" in names
+    assert "channel_adapter.channel_up_bias" in names
+    assert "paper_output_norm.weight" in names
+    assert "paper_output_norm.bias" in names
+    assert torch.count_nonzero(model.channel_adapter.channel_up_bias) > 0
+
+
 def test_paper_routes_have_exact_trainable_modules() -> None:
     torch.manual_seed(4)
     template = AdaptableForecaster(

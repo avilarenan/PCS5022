@@ -1,0 +1,70 @@
+# Protocol-lock candidate for the seven complex datasets on which the accepted
+# paper reports Time-PEFT-versus-LoRA results. Freeze this file, the composed
+# model config, the required sensitivity variants, and the implementation hash
+# before opening any full-matrix test result. The official `dysts` package is
+# pinned locally, but its version/default arguments are reconstruction choices
+# rather than the paper's unpublished exact trajectories.
+datasets:
+  - Lorenz
+  - CellCycle
+  - DoublePendulum
+  - Hopfield
+  - LorenzCoupled
+  - ECGCA115
+  - ECGCA515
+horizons:
+  - 96
+  - 192
+  - 336
+lookback: 96
+seeds:
+  - 0
+  - 1
+  - 2
+actions:
+  - L
+  - LFC
+
+training:
+  optimizer: AdamW
+  learning_rates:
+    - 0.001
+    - 0.0001
+    - 0.00001
+  batch_size: 128
+  max_epochs: 100
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.0
+  weight_decay: 0.01
+  gradient_clip: null
+  precision: fp32
+
+# Primary reconstruction assumptions that live in the composed model config:
+#   adapter_implementation: paper_count_inferred
+#   adapter_dropout: 0.1
+#   head_dropout: 0.1
+# Required one-factor sensitivities hold every field below fixed and change,
+# respectively, implementation to `paper`, adapter dropout to 0.0, and head
+# dropout to 0.0. See docs/TIME_PEFT_REPRODUCTION.md.
+
+preprocessing:
+  scaler: target-train-channel-standard
+  window_stride: 1
+  complex_split: [0.7, 0.1, 0.2]
+  validation_test_prior_context: true
+  # The accepted paper names dysts systems but omits its package version and
+  # trajectory arguments. These are pinned local reconstruction assumptions.
+  synthetic_generator: dysts
+  synthetic_length: 12000
+  synthetic_random_seed: 0
+  synthetic_pts_per_period: 100
+
+# Every null means the complete paper-style data path. Any non-null cap marks
+# the result as a plumbing smoke test and excludes it from accuracy claims.
+smoke_caps:
+  train_windows: null
+  validation_windows: null
+  test_windows: null
+  batches_per_epoch: null
+  evaluation_batches: null
+  epochs: null

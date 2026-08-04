@@ -86,6 +86,11 @@ def test_parquet_store_is_partitioned_resume_safe_and_deduplicated(tmp_path) -> 
     assert store.append(other_run)
     assert store.records(config_hash="config") == [loaded[0]]
     assert store.records(config_hash="other-config") == [other_run]
+    assert {item.key for item in store.records(seeds={0})} == {
+        loaded[0].key,
+        other_run.key,
+    }
+    assert store.records(seeds={1}) == []
 
 
 def test_record_key_covers_all_required_partitions() -> None:

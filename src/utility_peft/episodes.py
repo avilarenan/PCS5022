@@ -239,5 +239,9 @@ def _windows(
     selected = selected[:, :count].permute(1, 0, 2).contiguous().float()
     x = selected[..., :lookback]
     y = selected[..., lookback:]
+    if not torch.isfinite(y).all():
+        raise ValueError(
+            "Forecast targets must be finite; missing or infinite target values cannot be imputed"
+        )
     mask = torch.isfinite(x).all(dim=1)
     return torch.nan_to_num(x), torch.nan_to_num(y), mask.to(torch.bool)

@@ -73,16 +73,24 @@ class PaperFrequencyAdapter(nn.Module):
 
     The FFT is taken over patches. The top bins are selected independently per
     sample and channel, followed by an inverse FFT and an ``h1 -> h2``
-    projection. ``bias=False`` matches the paper's ``h1 * h2`` parameter count.
+    projection. The paper's analytical formula omits bias; ``bias=True`` is the
+    explicit Table-5-count interpretation used by the reproduction workflow.
     """
 
-    def __init__(self, d_model: int, *, output_size: int | None = None, top_k: int = 3) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        *,
+        output_size: int | None = None,
+        top_k: int = 3,
+        bias: bool = False,
+    ) -> None:
         super().__init__()
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         self.top_k = top_k
         self.output_size = output_size or d_model
-        self.projection = nn.Linear(d_model, self.output_size, bias=False)
+        self.projection = nn.Linear(d_model, self.output_size, bias=bias)
         # The paper does not publish initialization. Xavier initialization is
         # an explicit local choice; unlike the legacy MVP adapters, this path
         # does not alter Algorithm 1 with a residual zero-impact bypass.
@@ -108,7 +116,11 @@ class PaperFrequencyAdapter(nn.Module):
 
 
 class PaperChannelAdapter(nn.Module):
-    """Shared-down/channel-specific-up path specified by Time-PEFT."""
+    """Shared-down/channel-specific-up path specified by Time-PEFT.
+
+    The paper's analytical formula omits biases. ``bias=True`` exposes the
+    ordinary-bias interpretation supported by its rounded parameter table.
+    """
 
     def __init__(
         self,
@@ -118,6 +130,7 @@ class PaperChannelAdapter(nn.Module):
         frequency_size: int | None = None,
         bottleneck: int | None = None,
         dropout: float = 0.0,
+        bias: bool = False,
     ) -> None:
         super().__init__()
         if channels <= 0:
@@ -125,16 +138,22 @@ class PaperChannelAdapter(nn.Module):
         frequency_size = frequency_size or d_model
         width = bottleneck or max(d_model // 2, 1)
         self.channels = channels
-        self.shared_down = nn.Linear(d_model + frequency_size, width, bias=False)
+        self.shared_down = nn.Linear(d_model + frequency_size, width, bias=bias)
         self.activation = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
         self.channel_up = nn.Parameter(torch.empty(channels, width, d_model))
+        self.channel_up_bias = (
+            nn.Parameter(torch.empty(channels, d_model)) if bias else None
+        )
         # Algorithm 1 sends this tensor directly to LayerNorm and the forecast
         # head, so a zero matrix would collapse every initial forecast. The
         # paper leaves initialization unspecified; initialize each channel's
         # matrix independently with the same standard Xavier rule.
         for channel in range(channels):
             nn.init.xavier_uniform_(self.channel_up[channel])
+        if self.channel_up_bias is not None:
+            bound = 1 / math.sqrt(width)
+            nn.init.uniform_(self.channel_up_bias, -bound, bound)
 
     def forward(self, embeddings: Tensor, filtered: Tensor) -> Tensor:
         if embeddings.ndim != 4 or filtered.ndim != 4:
@@ -147,4 +166,7 @@ class PaperChannelAdapter(nn.Module):
             )
         combined = torch.cat((embeddings, filtered), dim=-1)
         hidden = self.dropout(self.activation(self.shared_down(combined)))
-        return torch.einsum("bckr,crd->bckd", hidden, self.channel_up)
+        output = torch.einsum("bckr,crd->bckd", hidden, self.channel_up)
+        if self.channel_up_bias is not None:
+            output = output + self.channel_up_bias.view(1, self.channels, 1, -1)
+        return output

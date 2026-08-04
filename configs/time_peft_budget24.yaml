@@ -1,0 +1,34 @@
+defaults:
+  - model: moment
+  - experiment: time_peft_budget24
+  - _self_
+
+paths:
+  data: data
+  # Base path for ad-hoc composition. The canonical runner isolates the live
+  # phases under the `ecg/` and `synthetic/` children of this directory.
+  artifacts: artifacts/time-peft-budget24
+  cache: .cache/huggingface
+
+device: cuda
+
+model:
+  # Preserve the primary paper-style reconstruction while reducing only the
+  # experimental grid and training duration in the experiment config.
+  source_head_checkpoint: null
+  allow_random_head: true
+  adapter_implementation: paper_count_inferred
+  frequency_top_k: 3
+  adapter_dropout: 0.1
+  head_dropout: 0.1
+
+claim:
+  implementation_label: paper-specified Time-PEFT reimplementation
+  official_code_verified: false
+  paper_id: n8seTOinYs
+  test_role: development-parity
+  evidence_scope: preliminary 24-hour development screen; non-confirmatory
+
+hydra:
+  job:
+    chdir: false

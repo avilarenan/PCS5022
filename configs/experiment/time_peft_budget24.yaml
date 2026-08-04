@@ -1,0 +1,58 @@
+# Base composition for the preliminary, non-confirmatory Time-PEFT screen. The
+# canonical runner executes two phases: ECGCA515 at max_epochs=4, then the five
+# synthetic datasets at max_epochs=8, each in its own artifact tree. The shared
+# grid below is never window- or batch-capped. Its results may guide the next
+# experiment; they are not a replacement for the locked full reproduction.
+datasets:
+  - Lorenz
+  - CellCycle
+  - DoublePendulum
+  - Hopfield
+  - LorenzCoupled
+  - ECGCA515
+horizons:
+  - 96
+lookback: 96
+seeds:
+  - 0
+  - 1
+actions:
+  - L
+  - LFC
+
+training:
+  optimizer: AdamW
+  learning_rates:
+    - 0.001
+    - 0.0001
+  batch_size: 128
+  # Phase-1 default. The canonical runner explicitly overrides this to 8 for
+  # the five-dataset synthetic phase.
+  max_epochs: 4
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.0
+  weight_decay: 0.01
+  gradient_clip: null
+  precision: fp32
+
+preprocessing:
+  scaler: target-train-channel-standard
+  window_stride: 1
+  complex_split: [0.7, 0.1, 0.2]
+  validation_test_prior_context: true
+  synthetic_generator: dysts
+  synthetic_length: 12000
+  synthetic_random_seed: 0
+  synthetic_pts_per_period: 100
+
+# All caps remain null: this screen trains and evaluates every chronological
+# stride-one window. The reduced protocol above, not data truncation, provides
+# the compute saving. Therefore the appropriate role is development-parity,
+# not plumbing-smoke or confirmatory.
+smoke_caps:
+  train_windows: null
+  validation_windows: null
+  test_windows: null
+  batches_per_epoch: null
+  evaluation_batches: null
+  epochs: null

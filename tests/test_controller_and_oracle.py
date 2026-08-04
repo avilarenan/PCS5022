@@ -132,12 +132,34 @@ def test_oracle_gate_requires_heterogeneous_adapter_winners_and_regret() -> None
                         seed=seed,
                     )
                 )
-    result = evaluate_oracle_gate(records, bootstrap_samples=5_000, seed=9)
+    result = evaluate_oracle_gate(
+        records,
+        bootstrap_samples=5_000,
+        seed=9,
+        expected_seeds=(0, 1, 2),
+    )
     assert result.passed
     assert result.heterogeneous_adapter_winners
     assert result.positive_fixed_action_regret
     assert set(result.winning_families) == {"channel", "frequency", "lora"}
     assert result.bootstrap_ci_low > 0
+
+
+def test_oracle_gate_rejects_disjoint_action_seed_sets() -> None:
+    records = [
+        record(
+            "source",
+            "episode-0",
+            f"A{action_index}",
+            float(action_index),
+            {"support": 0.0},
+            seed=action_index,
+        )
+        for action_index in range(7)
+    ]
+
+    with pytest.raises(ValueError, match=r"Exact seed pairing.*episode-0"):
+        evaluate_oracle_gate(records, bootstrap_samples=10)
 
 
 def test_failed_oracle_gate_blocks_controller_command(tmp_path) -> None:

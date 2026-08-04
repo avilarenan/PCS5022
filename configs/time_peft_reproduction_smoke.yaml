@@ -1,0 +1,29 @@
+defaults:
+  - model: moment
+  - experiment: time_peft_reproduction_smoke
+  - _self_
+
+paths:
+  data: data
+  artifacts: artifacts/time-peft-reproduction-smoke
+  cache: .cache/huggingface
+
+device: cuda
+
+model:
+  source_head_checkpoint: null
+  allow_random_head: true
+  adapter_implementation: paper_count_inferred
+  frequency_top_k: 3
+  adapter_dropout: 0.1
+  head_dropout: 0.1
+
+claim:
+  implementation_label: paper-specified Time-PEFT reimplementation
+  official_code_verified: false
+  paper_id: n8seTOinYs
+  test_role: plumbing-smoke
+
+hydra:
+  job:
+    chdir: false

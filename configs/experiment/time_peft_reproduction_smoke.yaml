@@ -1,0 +1,42 @@
+datasets:
+  - ECGCA515
+horizons:
+  - 96
+lookback: 96
+seeds:
+  - 0
+actions:
+  - L
+  - LFC
+
+training:
+  optimizer: AdamW
+  learning_rates:
+    - 0.001
+  batch_size: 128
+  max_epochs: 2
+  early_stopping_patience: 2
+  early_stopping_min_delta: 0.0
+  weight_decay: 0.01
+  gradient_clip: null
+  precision: fp32
+
+preprocessing:
+  scaler: target-train-channel-standard
+  window_stride: 1
+  complex_split: [0.7, 0.1, 0.2]
+  validation_test_prior_context: true
+  synthetic_generator: dysts
+  synthetic_length: 12000
+  synthetic_random_seed: 0
+  synthetic_pts_per_period: 100
+
+smoke_caps:
+  # This is a plumbing-only run. No result from capped windows, batches, or
+  # epochs is eligible as parity, development-anchor, or confirmatory evidence.
+  train_windows: 512
+  validation_windows: 256
+  test_windows: 256
+  batches_per_epoch: 2
+  evaluation_batches: 2
+  epochs: 2

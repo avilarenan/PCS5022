@@ -52,6 +52,7 @@ class UtilityStore:
         datasets: set[str] | None = None,
         episode_ids: set[str] | None = None,
         action_ids: set[str] | None = None,
+        seeds: set[int] | None = None,
         statuses: set[str] | None = None,
         config_hash: str | None = None,
         model_revision: str | None = None,
@@ -64,6 +65,8 @@ class UtilityStore:
             if episode_ids is not None and record.episode_id not in episode_ids:
                 continue
             if action_ids is not None and record.action_id not in action_ids:
+                continue
+            if seeds is not None and record.seed not in seeds:
                 continue
             if statuses is not None and record.status not in statuses:
                 continue

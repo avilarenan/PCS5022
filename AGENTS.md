@@ -20,6 +20,10 @@ requirements, not documentation conventions.
   until numerical parity against an authoritative release has been demonstrated.
 - The five local chaotic generators are deterministic, protocol-compatible
   substitutes. They are not the paper's exact `dysts` trajectories.
+- Establish Time-PEFT versus LoRA under the conventional target-train/validation/test
+  protocol before interpreting another router comparison. That reproduction lane
+  must not reuse episodic test support, the Electricity source head, router evidence,
+  gates, or LODO logic.
 
 Read `docs/EXPERIMENT.md` before changing the protocol and
 `docs/COMPUTE_ANALYSIS.md` before making an efficiency claim.
@@ -40,6 +44,12 @@ Paper mode uses LoRA rank 8, scale 32, and query/key/value projections; frequenc
 top-k 3 with `h2 = h1`; and channel rank `h1 / 2`. Do not silently substitute the
 older MVP adapters, q/v-only LoRA, alpha 16, a top-frequency fraction, or a
 `d_model / 8` bottleneck.
+
+The paper's simplified adapter formula excludes biases and normalization, while
+its rounded 4.429M MOMENT-base/Lorenz table count is exactly consistent with
+ordinary projection biases and affine LayerNorm. `paper` preserves the earlier
+bias-free/non-affine interpretation; `paper_count_inferred` makes the table-count
+inference explicit for reproduction. Never mix their artifacts.
 
 All arms clone one seeded template, so modules shared by two arms have identical
 initial weights and mini-batches. Their initial predictions are intentionally not
@@ -95,8 +105,12 @@ documented Xavier choice. Preserve the explicit arm-dataflow tests when changing
 - `src/utility_peft/data/datasets.py` and `datasets/manifest.yaml`: pinned sources,
   aliases, hashes, splits, and synthetic generators.
 - `src/utility_peft/evaluator.py`: fixed-update adaptation and measured costs.
+- `src/utility_peft/time_peft_reproduction.py`: conventional validation-tuned
+  LoRA-versus-Time-PEFT reproduction with an untouched test stage.
 - `configs/correlation_pilot.yaml` and `configs/correlation.yaml`: pilot and full
   experiment entry points.
+- `configs/time_peft_reproduction.yaml`: seven-complex-dataset paper-style entry
+  point; `time_peft_reproduction_smoke.yaml` contains explicit non-claim caps.
 
 ## Local development
 

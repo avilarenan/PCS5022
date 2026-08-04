@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -14,6 +14,7 @@ import numpy as np
 from utility_peft.actions import MVP_ACTIONS
 from utility_peft.controller import ControllerTrainingConfig, train_controller_nested
 from utility_peft.costs import CostTable
+from utility_peft.matching import require_exact_seed_pairing
 from utility_peft.types import EvidenceBundle, UtilityRecord
 from utility_peft.utils import atomic_write_json
 
@@ -112,6 +113,7 @@ def evaluate_leave_one_dataset_out(
     cost_weights: Mapping[str, float] | None = None,
     bootstrap_samples: int = 10_000,
     bootstrap_seed: int = 0,
+    expected_seeds: Sequence[int] | None = None,
 ) -> LodoMetrics:
     config = config or ControllerTrainingConfig()
     mvp_ids = {action.action_id for action in MVP_ACTIONS}
@@ -122,6 +124,12 @@ def evaluate_leave_one_dataset_out(
         and record.action_id in mvp_ids
         and math.isfinite(record.normalized_gain)
     ]
+    required_actions = tuple(sorted(mvp_ids))
+    _require_complete_seed_pairing(
+        records,
+        required_actions,
+        expected_seeds=expected_seeds,
+    )
     datasets = sorted({record.dataset for record in records})
     if len(datasets) < 3:
         raise ValueError("Nested leave-one-dataset-out evaluation requires at least three datasets")
@@ -236,11 +244,12 @@ def evaluate_leave_one_dataset_out(
             baseline_rows = actions["A5"]["records"]
             selected_by_seed = {record.seed: record for record in selected_rows}
             baseline_by_seed = {record.seed: record for record in baseline_rows}
-            common_seeds = sorted(selected_by_seed.keys() & baseline_by_seed.keys())
-            if not common_seeds:
-                raise ValueError(f"No paired A5 seeds for episode {episode_id}")
+            if selected_by_seed.keys() != baseline_by_seed.keys():
+                raise ValueError(
+                    f"Exact selected/A5 seed pairing was lost for episode {episode_id}"
+                )
             episode_relative = []
-            for seed in common_seeds:
+            for seed in sorted(selected_by_seed):
                 selected_record = selected_by_seed[seed]
                 baseline_record = baseline_by_seed[seed]
                 difference = (
@@ -406,6 +415,27 @@ def _episode_action_rows(
             "records": tuple(values),
         }
     return output
+
+
+def _require_complete_seed_pairing(
+    records: list[UtilityRecord],
+    required_actions: tuple[str, ...],
+    *,
+    expected_seeds: Sequence[int] | None = None,
+) -> None:
+    grouped: dict[str, dict[str, list[UtilityRecord]]] = {}
+    for record in records:
+        grouped.setdefault(record.episode_id, {}).setdefault(record.action_id, []).append(record)
+    if not grouped:
+        raise ValueError("LODO evaluation requires successful finite utility records")
+    for episode_id, actions in sorted(grouped.items()):
+        require_exact_seed_pairing(
+            actions,
+            required_actions,
+            episode_label=episode_id,
+            seed_getter=lambda record: record.seed,
+            expected_seeds=expected_seeds,
+        )
 
 
 def _best_fixed(

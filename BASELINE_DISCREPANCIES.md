@@ -66,6 +66,14 @@ repository uses per-sample/channel frequency scores averaged over hidden dimensi
 Xavier adapter initialization, and non-affine output LayerNorm. These explicit choices
 and the two routing-only ablations prevent an exact reproduction claim.
 
+The paper's rounded MOMENT-base/Lorenz parameter table provides an additional clue:
+ordinary biases in the frequency, shared-down, and channel-up projections plus affine
+LayerNorm add exactly 4,992 parameters, reconciling the weight-only calculation with
+the reported 4.429M total. The conventional reproduction lane therefore exposes a
+separate `paper_count_inferred` variant with those terms. This is a documented
+table-based inference, not proof of the unpublished implementation, and it does not
+retroactively change the earlier router artifacts produced with `paper`.
+
 The paper's spectral-entropy and transfer-entropy quantities are dataset diagnostics;
 Algorithm 1 does not use them to select adapters. Residual-correlation activation is a
 new outer router. Its deployment cost includes its frozen support forecast and evidence

@@ -1,21 +1,26 @@
 """Versioned dataset loading for the Time-PEFT comparison suite.
 
 Public CSV/EDF sources are described by ``datasets/manifest.yaml``. The five
-chaotic-system loaders are deterministic, protocol-compatible local generators;
-they are deliberately not represented as exact reproductions of the paper's
-``dysts`` trajectories.
+chaotic systems default to deterministic, protocol-compatible local generators
+for legacy experiments. Paper-reproduction runs can explicitly select the
+version-pinned official ``dysts`` implementation instead.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
+import os
+import pickle
 import re
+import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +32,46 @@ from torch import Tensor
 _SPLIT_ALIASES = {"val": "validation", "valid": "validation"}
 _REQUIRED_SPLITS = {"train", "validation", "test"}
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_DYSTS_REPRODUCTION_VERSION = "0.96"
+
+
+def dysts_reproduction_provenance() -> dict[str, Any]:
+    """Return and enforce the numerical environment for official trajectories."""
+
+    try:
+        dysts_version = metadata.version("dysts")
+    except metadata.PackageNotFoundError as error:
+        raise RuntimeError(
+            "Official chaotic-data reproduction requires the project-pinned dysts package"
+        ) from error
+    if dysts_version != _DYSTS_REPRODUCTION_VERSION:
+        raise RuntimeError(
+            "Official chaotic-data reproduction requires "
+            f"dysts=={_DYSTS_REPRODUCTION_VERSION}, found {dysts_version}"
+        )
+    numba_version = (
+        metadata.version("numba") if importlib.util.find_spec("numba") is not None else None
+    )
+    return {
+        "dysts_version": dysts_version,
+        "numpy_version": metadata.version("numpy"),
+        "scipy_version": metadata.version("scipy"),
+        "numba_version": numba_version,
+        "trajectory_arguments": {
+            "initial_conditions": "dysts-system-metadata-default",
+            "integration_step": "dysts-system-metadata-dt",
+            "resample": True,
+            "return_times": False,
+            "standardize": False,
+            "postprocess": True,
+            "noise": 0.0,
+            "timescale": "Fourier",
+            "method": "Radau",
+            "rtol": 1e-12,
+            "atol": 1e-12,
+            "verbose": False,
+        },
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +183,9 @@ def load_dataset_series(
     download: bool = False,
     lorenz_length: int | None = None,
     synthetic_length: int | None = None,
+    synthetic_generator: str = "compatible",
+    synthetic_random_seed: int = 0,
+    synthetic_pts_per_period: int = 100,
     local_path: str | Path | None = None,
     source_url: str | None = None,
     manifest_path: str | Path | None = None,
@@ -147,12 +195,20 @@ def load_dataset_series(
 
     ``local_path`` and ``source_url`` are explicit per-call overrides. Without
     overrides, the pinned location and digest in the manifest are enforced.
-    ``download`` never overwrites an existing file.
+    ``download`` never overwrites an existing file. ``synthetic_generator`` is
+    either ``compatible`` (the legacy local proxies) or ``dysts`` (the official
+    Gilpin benchmark package pinned by this project).
     """
 
     manifest = load_dataset_manifest(manifest_path)
     canonical, entry = _resolve_dataset(name, manifest["datasets"])
     family = _string_field(entry, "family", canonical)
+    data_root = Path(root).expanduser()
+    if synthetic_generator not in {"compatible", "dysts"}:
+        raise ValueError(
+            "synthetic_generator must be 'compatible' or 'dysts', got "
+            f"{synthetic_generator!r}"
+        )
 
     if "generator" in entry:
         if local_path is not None or source_url is not None:
@@ -164,7 +220,16 @@ def load_dataset_series(
             length = lorenz_length
         if length is None:
             length = int(entry.get("default_length", 12_000))
-        values = _generate_synthetic(canonical, length)
+        if synthetic_generator == "compatible":
+            values = _generate_synthetic(canonical, length)
+        elif synthetic_generator == "dysts":
+            values = _load_or_generate_dysts_synthetic(
+                canonical,
+                length,
+                cache_root=data_root,
+                random_seed=synthetic_random_seed,
+                pts_per_period=synthetic_pts_per_period,
+            )
         splits = _build_splits(entry, values.shape[1], canonical)
         return DatasetSeries(
             name=canonical,
@@ -174,8 +239,7 @@ def load_dataset_series(
             sha256=_tensor_sha256(values),
         )
 
-    data_root = Path(root).expanduser()
-    path, is_manifest_path = _locate_data_file(
+    path = _locate_data_file(
         data_root,
         canonical,
         entry,
@@ -195,7 +259,7 @@ def load_dataset_series(
         downloaded = True
 
     digest = _file_sha256(path)
-    pinned_source = source_url is None and local_path is None and is_manifest_path
+    pinned_source = source_url is None and local_path is None
     if verify_hash and pinned_source:
         expected_digest = _string_field(entry, "sha256", canonical).lower()
         if digest != expected_digest:
@@ -263,12 +327,12 @@ def _locate_data_file(
     entry: Mapping[str, Any],
     *,
     local_path: str | Path | None,
-) -> tuple[Path, bool]:
+) -> Path:
     manifest_relative = Path(_string_field(entry, "local_path", canonical))
     manifest_target = root / manifest_relative
     if local_path is not None:
         override = Path(local_path).expanduser()
-        return (override if override.is_absolute() else root / override), False
+        return override if override.is_absolute() else root / override
 
     candidates = (
         manifest_target,
@@ -278,8 +342,8 @@ def _locate_data_file(
     )
     for candidate in candidates:
         if candidate.is_file():
-            return candidate, candidate == manifest_target
-    return manifest_target, True
+            return candidate
+    return manifest_target
 
 
 def _download_file(url: str, target: Path) -> None:
@@ -456,6 +520,188 @@ def _generate_synthetic(canonical: str, length: int) -> Tensor:
     if values.ndim != 2 or values.shape[1] != length or not np.isfinite(values).all():
         raise RuntimeError(f"Synthetic generator {canonical} produced an invalid trajectory")
     return torch.from_numpy(np.ascontiguousarray(values, dtype=np.float32))
+
+
+def _generate_dysts_synthetic(
+    canonical: str,
+    length: int,
+    *,
+    random_seed: int,
+    pts_per_period: int,
+) -> Tensor:
+    """Generate a trajectory with the official, version-pinned ``dysts`` package.
+
+    The Time-PEFT paper names the Gilpin benchmark codebase but omits its exact
+    release and trajectory arguments. Reproduction configs therefore record
+    these explicit assumptions rather than relying on mutable package defaults.
+    """
+
+    if length < 20:
+        raise ValueError(f"Synthetic dataset length must be at least 20, got {length}")
+    if random_seed < 0:
+        raise ValueError(f"synthetic_random_seed must be non-negative, got {random_seed}")
+    if pts_per_period < 1:
+        raise ValueError(
+            f"synthetic_pts_per_period must be positive, got {pts_per_period}"
+        )
+
+    dysts_reproduction_provenance()
+    try:
+        from dysts import flows
+    except ImportError as error:  # pragma: no cover - dependency installation failure
+        raise RuntimeError(
+            "Official chaotic-data reproduction requires the project-pinned dysts package"
+        ) from error
+
+    system_types: dict[str, type[Any]] = {
+        "Lorenz": flows.Lorenz,
+        "CellCycle": flows.CellCycle,
+        "DoublePendulum": flows.DoublePendulum,
+        "Hopfield": flows.Hopfield,
+        "LorenzCoupled": flows.LorenzCoupled,
+    }
+    try:
+        system = system_types[canonical]()
+    except KeyError as error:
+        raise ValueError(f"No dysts generator is available for {canonical}") from error
+
+    numpy_random_state = np.random.get_state()
+    try:
+        trajectory = np.asarray(
+            system.make_trajectory(
+                length,
+                init_cond=None,
+                resample=True,
+                pts_per_period=pts_per_period,
+                return_times=False,
+                standardize=False,
+                postprocess=True,
+                noise=0.0,
+                timescale="Fourier",
+                method="Radau",
+                random_seed=random_seed,
+                rtol=1e-12,
+                atol=1e-12,
+                verbose=False,
+            ),
+            dtype=np.float64,
+        )
+    finally:
+        np.random.set_state(numpy_random_state)
+    if trajectory.ndim != 2 or trajectory.shape[0] != length:
+        raise RuntimeError(
+            f"dysts generator {canonical} returned shape {trajectory.shape}, expected "
+            f"[{length}, channels]"
+        )
+    values = trajectory.T
+    if not np.isfinite(values).all():
+        raise RuntimeError(f"dysts generator {canonical} produced a non-finite trajectory")
+    return torch.from_numpy(np.ascontiguousarray(values, dtype=np.float32))
+
+
+def _load_or_generate_dysts_synthetic(
+    canonical: str,
+    length: int,
+    *,
+    cache_root: Path,
+    random_seed: int,
+    pts_per_period: int,
+) -> Tensor:
+    """Materialize one exact official trajectory and validate it on every reuse."""
+
+    identity: dict[str, Any] = {
+        "schema_version": 1,
+        "dataset": canonical,
+        "length": length,
+        "random_seed": random_seed,
+        "pts_per_period": pts_per_period,
+        "runtime_provenance": dysts_reproduction_provenance(),
+    }
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    cache_key = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    cache_path = (
+        cache_root
+        / ".utility_peft"
+        / "dysts"
+        / canonical
+        / f"trajectory-{cache_key}.pt"
+    )
+    if cache_path.is_file():
+        try:
+            payload = torch.load(cache_path, map_location="cpu", weights_only=True)
+        except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as error:
+            raise RuntimeError(
+                f"Cannot read materialized dysts trajectory {cache_path}: {error}. "
+                "Remove that single cache file and regenerate it."
+            ) from error
+        return _validate_dysts_cache_payload(payload, identity, cache_path)
+
+    values = _generate_dysts_synthetic(
+        canonical,
+        length,
+        random_seed=random_seed,
+        pts_per_period=pts_per_period,
+    )
+    payload = {
+        "identity": identity,
+        "values": values,
+        "sha256": _tensor_sha256(values),
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=cache_path.parent,
+        prefix=f".{cache_path.stem}-",
+        suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, cache_path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return values
+
+
+def _validate_dysts_cache_payload(
+    payload: Any,
+    expected_identity: dict[str, Any],
+    path: Path,
+) -> Tensor:
+    if not isinstance(payload, dict) or payload.get("identity") != expected_identity:
+        raise RuntimeError(f"Materialized dysts trajectory has incompatible identity: {path}")
+    values = payload.get("values")
+    if not isinstance(values, Tensor) or values.ndim != 2:
+        raise RuntimeError(f"Materialized dysts trajectory has invalid values: {path}")
+    expected_shape = (
+        int(_dysts_channel_count(str(expected_identity["dataset"]))),
+        int(expected_identity["length"]),
+    )
+    if tuple(values.shape) != expected_shape or values.dtype != torch.float32:
+        raise RuntimeError(
+            f"Materialized dysts trajectory {path} has shape/dtype "
+            f"{tuple(values.shape)}/{values.dtype}, expected {expected_shape}/torch.float32"
+        )
+    if not bool(torch.isfinite(values).all()):
+        raise RuntimeError(f"Materialized dysts trajectory contains non-finite values: {path}")
+    observed_sha256 = _tensor_sha256(values)
+    if payload.get("sha256") != observed_sha256:
+        raise RuntimeError(f"Materialized dysts trajectory SHA-256 mismatch: {path}")
+    return values
+
+
+def _dysts_channel_count(canonical: str) -> int:
+    try:
+        return {
+            "Lorenz": 3,
+            "CellCycle": 6,
+            "DoublePendulum": 4,
+            "Hopfield": 6,
+            "LorenzCoupled": 6,
+        }[canonical]
+    except KeyError as error:
+        raise ValueError(f"No dysts channel count is registered for {canonical}") from error
 
 
 def _rk4_trajectory(

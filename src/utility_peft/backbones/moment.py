@@ -24,8 +24,11 @@ class MomentBackbone(nn.Module):
         revision: str = MOMENT_MODEL_REVISION,
         source_head_checkpoint: str | Path | None = None,
         allow_random_head: bool = False,
+        head_dropout: float = 0.0,
     ) -> None:
         super().__init__()
+        if not 0.0 <= head_dropout < 1.0:
+            raise ValueError("head_dropout must be in [0, 1)")
         try:
             from momentfm import MOMENTPipeline
         except ImportError as error:
@@ -41,7 +44,10 @@ class MomentBackbone(nn.Module):
                 "task_name": "forecasting",
                 "forecast_horizon": horizon,
                 "seq_len": lookback,
-                "head_dropout": 0.0,
+                # MOMENT and TSLib commonly use 0.1, but historical project
+                # workflows used 0.0. Keep the value explicit at the wrapper
+                # boundary so reproduction configs can record the assumption.
+                "head_dropout": head_dropout,
                 "freeze_embedder": True,
                 "freeze_encoder": True,
                 "freeze_head": False,

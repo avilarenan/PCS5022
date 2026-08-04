@@ -19,6 +19,7 @@ from utility_peft.correlation import (
     CHANNEL_ROUTING_FEATURES,
     FREQUENCY_ROUTING_FEATURES,
 )
+from utility_peft.matching import require_exact_seed_pairing
 from utility_peft.types import EvidenceBundle, UtilityRecord
 
 
@@ -59,6 +60,10 @@ class CorrelationRouterConfig:
     regularization_c: float = 1.0
     max_iter: int = 1_000
     random_state: int = 0
+    bootstrap_samples: int = 10_000
+    bootstrap_seed: int = 0
+    bootstrap_confidence_level: float = 0.95
+    random_control_repeats: int = 1_000
     frequency_features: tuple[str, ...] = FREQUENCY_ROUTING_FEATURES
     channel_features: tuple[str, ...] = CHANNEL_ROUTING_FEATURES
 
@@ -73,6 +78,12 @@ class CorrelationRouterConfig:
             raise ValueError("regularization_c must be positive")
         if self.max_iter <= 0:
             raise ValueError("max_iter must be positive")
+        if self.bootstrap_samples <= 0:
+            raise ValueError("bootstrap_samples must be positive")
+        if not 0.0 < self.bootstrap_confidence_level < 1.0:
+            raise ValueError("bootstrap_confidence_level must lie in (0, 1)")
+        if self.random_control_repeats <= 0:
+            raise ValueError("random_control_repeats must be positive")
         if not self.frequency_features or not self.channel_features:
             raise ValueError("Each module gate needs at least one feature")
 
@@ -168,6 +179,8 @@ class BenchmarkComparison:
     """
 
     relative_mse_difference: float
+    relative_mse_ci_low: float
+    relative_mse_ci_high: float
     relative_mae_difference: float | None
     end_to_end_time_reduction_fraction: float
     trainable_parameter_reduction_fraction: float
@@ -175,7 +188,78 @@ class BenchmarkComparison:
     peak_memory_reduction_fraction: float
     flops_reduction_fraction: float
     noninferiority_margin: float
+    bootstrap_samples: int
+    bootstrap_confidence_level: float
+    accuracy_superior: bool
+    point_noninferior_within_margin: bool
     noninferior_within_margin: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceFixedControl:
+    """Best fixed arm selected independently inside every source-only fold."""
+
+    actions_by_heldout_dataset: Mapping[str, str]
+    route_counts: Mapping[str, int]
+    aggregate: BenchmarkAggregate
+    relative_mse_difference_vs_lfc: float
+    router_relative_mse_difference_vs_control: float
+    router_relative_mse_difference_vs_control_ci_low: float
+    router_relative_mse_difference_vs_control_ci_high: float
+
+
+@dataclass(frozen=True, slots=True)
+class OracleControl:
+    """Target-query-informed accuracy ceiling; never a deployable selector."""
+
+    route_counts: Mapping[str, int]
+    aggregate: BenchmarkAggregate
+    relative_mse_difference_vs_lfc: float
+    router_relative_mse_regret: float
+
+
+@dataclass(frozen=True, slots=True)
+class RandomMatchedControl:
+    """Random target assignments that exactly preserve each fold's route histogram."""
+
+    repeats: int
+    assignment_scope: str
+    route_counts: Mapping[str, int]
+    distinct_assignments_observed: int
+    total_possible_assignments: int
+    descriptive_only: bool
+    relative_mse_difference_vs_lfc_mean: float
+    relative_mse_difference_vs_lfc_randomization_low: float
+    relative_mse_difference_vs_lfc_randomization_high: float
+    router_relative_mse_difference_vs_control_mean: float
+    router_relative_mse_difference_vs_control_randomization_low: float
+    router_relative_mse_difference_vs_control_randomization_high: float
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationControlReport:
+    source_fixed: SourceFixedControl
+    random_histogram_matched: RandomMatchedControl
+    oracle: OracleControl
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationUnitAudit:
+    """One inspectable held-out unit after seed averaging."""
+
+    dataset: str
+    horizon: int
+    episode_id: str
+    seeds: tuple[int, ...]
+    frequency_probability: float
+    channel_probability: float
+    routed_action: str
+    source_fixed_action: str
+    oracle_action: str
+    arm_seed_mean_mse: Mapping[str, float]
+    router_seed_mean_mse: float
+    lfc_seed_mean_mse: float
+    relative_mse_difference_vs_lfc: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +291,9 @@ class CorrelationBenchmarkReport:
     probability_threshold: float
     min_relative_benefit: float
     noninferiority_margin: float
+    controls: CorrelationControlReport
+    one_class_folds: tuple[str, ...]
+    unit_table: tuple[CorrelationUnitAudit, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -223,6 +310,7 @@ class PaperParameterSavings:
     fixed_trainable_parameters: int
     frequency_adapter_parameters: int
     channel_adapter_parameters: int
+    output_norm_parameters: int
     always_on_trainable_parameters: int
     expected_router_trainable_parameters: float
     expected_saved_parameters: float
@@ -236,6 +324,7 @@ class _EpisodeActions:
     episode_id: str
     horizon: int
     evidence: dict[str, float]
+    seeds: tuple[int, ...]
     records: dict[str, tuple[Any, ...]]
 
 
@@ -254,12 +343,13 @@ def train_correlation_router(
     heldout_dataset: str | None = None,
     config: CorrelationRouterConfig | None = None,
     action_ids: RouterActionIds | None = None,
+    expected_seeds: Sequence[int] | None = None,
 ) -> CorrelationRouter:
     """Fit both gates, excluding ``heldout_dataset`` before label construction."""
 
     config = config or CorrelationRouterConfig()
     action_ids = action_ids or infer_router_action_ids(records)
-    episodes = _complete_episodes(records, action_ids)
+    episodes = _complete_episodes(records, action_ids, expected_seeds=expected_seeds)
     source = [episode for episode in episodes if episode.dataset != heldout_dataset]
     if not source:
         raise ValueError("No complete source episodes are available for router training")
@@ -321,27 +411,55 @@ def evaluate_correlation_lodo(
     *,
     config: CorrelationRouterConfig | None = None,
     action_ids: RouterActionIds | None = None,
+    expected_seeds: Sequence[int] | None = None,
 ) -> CorrelationBenchmarkReport:
     """Evaluate support-only correlation routing with leave-one-dataset-out fits."""
 
     config = config or CorrelationRouterConfig()
     action_ids = action_ids or infer_router_action_ids(records)
-    episodes = _complete_episodes(records, action_ids)
+    episodes = _complete_episodes(records, action_ids, expected_seeds=expected_seeds)
     datasets = sorted({episode.dataset for episode in episodes})
     if len(datasets) < 2:
         raise ValueError("Correlation LODO evaluation requires at least two datasets")
 
     folds: list[CorrelationFoldReport] = []
     all_observations: list[_MatchedObservation] = []
+    all_source_fixed_observations: list[_MatchedObservation] = []
+    all_router_vs_source_fixed: list[_MatchedObservation] = []
+    all_oracle_observations: list[_MatchedObservation] = []
+    all_router_vs_oracle: list[_MatchedObservation] = []
     all_routes: Counter[str] = Counter()
-    for heldout_dataset in datasets:
+    source_fixed_routes: Counter[str] = Counter()
+    oracle_routes: Counter[str] = Counter()
+    source_fixed_actions: dict[str, str] = {}
+    routed_units: list[tuple[_EpisodeActions, str]] = []
+    unit_table: list[CorrelationUnitAudit] = []
+    one_class_folds: list[str] = []
+    for fold_index, heldout_dataset in enumerate(datasets):
         router = train_correlation_router(
             records,
             heldout_dataset=heldout_dataset,
             config=config,
             action_ids=action_ids,
+            expected_seeds=expected_seeds,
         )
-        target = [episode for episode in episodes if episode.dataset == heldout_dataset]
+        source = [episode for episode in episodes if episode.dataset != heldout_dataset]
+        source_fixed_action = _best_source_fixed_action(source, action_ids)
+        source_fixed_actions[heldout_dataset] = source_fixed_action
+        if router.frequency_model.positive_examples in {
+            0,
+            router.frequency_model.training_examples,
+        }:
+            one_class_folds.append(f"{heldout_dataset}:frequency")
+        if router.channel_model.positive_examples in {
+            0,
+            router.channel_model.training_examples,
+        }:
+            one_class_folds.append(f"{heldout_dataset}:channel")
+        target = sorted(
+            (episode for episode in episodes if episode.dataset == heldout_dataset),
+            key=lambda episode: (episode.horizon, episode.episode_id),
+        )
         observations: list[_MatchedObservation] = []
         route_counts: Counter[str] = Counter()
         for episode in target:
@@ -356,9 +474,6 @@ def evaluate_correlation_lodo(
                 int(_record_value(record, "seed")): record
                 for record in episode.records[action_ids.full]
             }
-            common_seeds = sorted(selected_by_seed.keys() & baseline_by_seed.keys())
-            if not common_seeds:
-                continue
             route_counts[decision.action_id] += 1
             evidence_time = _mean_finite(
                 [
@@ -366,12 +481,86 @@ def evaluate_correlation_lodo(
                     for record in episode.records[action_ids.base]
                 ]
             )
-            for seed in common_seeds:
-                observations.append(
+            oracle_action = min(
+                action_ids.all,
+                key=lambda action_id: (
+                    _episode_action_mean(episode, action_id, "adapted_loss"),
+                    action_id,
+                ),
+            )
+            arm_mean_mse = {
+                action_id: _episode_action_mean(episode, action_id, "adapted_loss")
+                for action_id in action_ids.all
+            }
+            routed_mse = arm_mean_mse[decision.action_id]
+            lfc_mse = arm_mean_mse[action_ids.full]
+            routed_units.append((episode, decision.action_id))
+            unit_table.append(
+                CorrelationUnitAudit(
+                    dataset=episode.dataset,
+                    horizon=episode.horizon,
+                    episode_id=episode.episode_id,
+                    seeds=episode.seeds,
+                    frequency_probability=decision.frequency_probability,
+                    channel_probability=decision.channel_probability,
+                    routed_action=decision.action_id,
+                    source_fixed_action=source_fixed_action,
+                    oracle_action=oracle_action,
+                    arm_seed_mean_mse=dict(sorted(arm_mean_mse.items())),
+                    router_seed_mean_mse=routed_mse,
+                    lfc_seed_mean_mse=lfc_mse,
+                    relative_mse_difference_vs_lfc=_relative_difference(
+                        routed_mse,
+                        lfc_mse,
+                    ),
+                )
+            )
+            source_fixed_routes[source_fixed_action] += 1
+            oracle_routes[oracle_action] += 1
+            fixed_by_seed = _records_by_seed(episode, source_fixed_action)
+            oracle_by_seed = _records_by_seed(episode, oracle_action)
+            for seed in episode.seeds:
+                unit_key = (episode.dataset, episode.horizon, episode.episode_id)
+                routed = _MatchedObservation(
+                    unit_key=unit_key,
+                    selected=selected_by_seed[seed],
+                    baseline=baseline_by_seed[seed],
+                    evidence_wall_time_s=evidence_time,
+                    routing_wall_time_s=routing_time,
+                )
+                observations.append(routed)
+                all_source_fixed_observations.append(
                     _MatchedObservation(
-                        unit_key=(episode.dataset, episode.horizon, episode.episode_id),
-                        selected=selected_by_seed[seed],
+                        unit_key=unit_key,
+                        selected=fixed_by_seed[seed],
                         baseline=baseline_by_seed[seed],
+                        evidence_wall_time_s=0.0,
+                        routing_wall_time_s=0.0,
+                    )
+                )
+                all_router_vs_source_fixed.append(
+                    _MatchedObservation(
+                        unit_key=unit_key,
+                        selected=selected_by_seed[seed],
+                        baseline=fixed_by_seed[seed],
+                        evidence_wall_time_s=evidence_time,
+                        routing_wall_time_s=routing_time,
+                    )
+                )
+                all_oracle_observations.append(
+                    _MatchedObservation(
+                        unit_key=unit_key,
+                        selected=oracle_by_seed[seed],
+                        baseline=baseline_by_seed[seed],
+                        evidence_wall_time_s=0.0,
+                        routing_wall_time_s=0.0,
+                    )
+                )
+                all_router_vs_oracle.append(
+                    _MatchedObservation(
+                        unit_key=unit_key,
+                        selected=selected_by_seed[seed],
+                        baseline=oracle_by_seed[seed],
                         evidence_wall_time_s=evidence_time,
                         routing_wall_time_s=routing_time,
                     )
@@ -394,6 +583,9 @@ def evaluate_correlation_lodo(
                     router_aggregate,
                     baseline_aggregate,
                     noninferiority_margin=config.noninferiority_margin,
+                    bootstrap_samples=config.bootstrap_samples,
+                    bootstrap_confidence_level=config.bootstrap_confidence_level,
+                    bootstrap_seed=config.bootstrap_seed + fold_index + 1,
                 ),
                 frequency_training_examples=router.frequency_model.training_examples,
                 frequency_positive_examples=router.frequency_model.positive_examples,
@@ -406,6 +598,106 @@ def evaluate_correlation_lodo(
 
     router_aggregate = _aggregate_observations(all_observations, selected=True)
     baseline_aggregate = _aggregate_observations(all_observations, selected=False)
+    fixed_aggregate = _aggregate_observations(all_source_fixed_observations, selected=True)
+    oracle_aggregate = _aggregate_observations(all_oracle_observations, selected=True)
+
+    # With only a few episodes per outer fold, fold-wise permutations are often
+    # degenerate. Permute the complete held-out route multiset globally instead;
+    # this preserves the exact overall action histogram while breaking every
+    # episode/evidence association. This remains a descriptive randomization
+    # control rather than a sampling-confidence interval.
+    random_vs_lfc: list[list[float]] = [
+        [] for _ in range(config.random_control_repeats)
+    ]
+    router_vs_random: list[list[float]] = [
+        [] for _ in range(config.random_control_repeats)
+    ]
+    random_generator = np.random.default_rng(config.random_state + 10_000)
+    route_pool = [route for _episode, route in routed_units]
+    observed_assignments: set[tuple[str, ...]] = set()
+    for repeat in range(config.random_control_repeats):
+        permuted = tuple(str(value) for value in random_generator.permutation(route_pool))
+        observed_assignments.add(permuted)
+        for (episode, router_action), random_action in zip(
+            routed_units,
+            permuted,
+            strict=True,
+        ):
+            random_mse = _episode_action_mean(episode, random_action, "adapted_loss")
+            router_mse = _episode_action_mean(episode, router_action, "adapted_loss")
+            lfc_mse = _episode_action_mean(episode, action_ids.full, "adapted_loss")
+            random_vs_lfc[repeat].append(_relative_difference(random_mse, lfc_mse))
+            router_vs_random[repeat].append(
+                _relative_difference(router_mse, random_mse)
+            )
+    random_vs_lfc_estimates = np.asarray(
+        [_mean_finite(values) for values in random_vs_lfc], dtype=np.float64
+    )
+    router_vs_random_estimates = np.asarray(
+        [_mean_finite(values) for values in router_vs_random], dtype=np.float64
+    )
+    random_low, random_high = _central_interval(
+        random_vs_lfc_estimates,
+        config.bootstrap_confidence_level,
+    )
+    router_random_low, router_random_high = _central_interval(
+        router_vs_random_estimates,
+        config.bootstrap_confidence_level,
+    )
+    fixed_ci_low, fixed_ci_high = _paired_cluster_bootstrap_interval(
+        all_router_vs_source_fixed,
+        "adapted_loss",
+        samples=config.bootstrap_samples,
+        confidence_level=config.bootstrap_confidence_level,
+        seed=config.bootstrap_seed + 1_000,
+    )
+    controls = CorrelationControlReport(
+        source_fixed=SourceFixedControl(
+            actions_by_heldout_dataset=dict(sorted(source_fixed_actions.items())),
+            route_counts=dict(sorted(source_fixed_routes.items())),
+            aggregate=fixed_aggregate,
+            relative_mse_difference_vs_lfc=float(
+                _mean_unit_relative_difference(
+                    all_source_fixed_observations,
+                    "adapted_loss",
+                )
+            ),
+            router_relative_mse_difference_vs_control=float(
+                _mean_unit_relative_difference(
+                    all_router_vs_source_fixed,
+                    "adapted_loss",
+                )
+            ),
+            router_relative_mse_difference_vs_control_ci_low=fixed_ci_low,
+            router_relative_mse_difference_vs_control_ci_high=fixed_ci_high,
+        ),
+        random_histogram_matched=RandomMatchedControl(
+            repeats=config.random_control_repeats,
+            assignment_scope="global-heldout-units",
+            route_counts=dict(sorted(all_routes.items())),
+            distinct_assignments_observed=len(observed_assignments),
+            total_possible_assignments=_multiset_permutation_count(route_pool),
+            descriptive_only=True,
+            relative_mse_difference_vs_lfc_mean=float(random_vs_lfc_estimates.mean()),
+            relative_mse_difference_vs_lfc_randomization_low=random_low,
+            relative_mse_difference_vs_lfc_randomization_high=random_high,
+            router_relative_mse_difference_vs_control_mean=float(
+                router_vs_random_estimates.mean()
+            ),
+            router_relative_mse_difference_vs_control_randomization_low=router_random_low,
+            router_relative_mse_difference_vs_control_randomization_high=router_random_high,
+        ),
+        oracle=OracleControl(
+            route_counts=dict(sorted(oracle_routes.items())),
+            aggregate=oracle_aggregate,
+            relative_mse_difference_vs_lfc=float(
+                _mean_unit_relative_difference(all_oracle_observations, "adapted_loss")
+            ),
+            router_relative_mse_regret=float(
+                _mean_unit_relative_difference(all_router_vs_oracle, "adapted_loss")
+            ),
+        ),
+    )
     return CorrelationBenchmarkReport(
         folds=tuple(folds),
         episodes=sum(all_routes.values()),
@@ -417,11 +709,17 @@ def evaluate_correlation_lodo(
             router_aggregate,
             baseline_aggregate,
             noninferiority_margin=config.noninferiority_margin,
+            bootstrap_samples=config.bootstrap_samples,
+            bootstrap_confidence_level=config.bootstrap_confidence_level,
+            bootstrap_seed=config.bootstrap_seed,
         ),
         action_ids=action_ids,
         probability_threshold=config.probability_threshold,
         min_relative_benefit=config.min_relative_benefit,
         noninferiority_margin=config.noninferiority_margin,
+        controls=controls,
+        one_class_folds=tuple(sorted(one_class_folds)),
+        unit_table=tuple(unit_table),
     )
 
 
@@ -448,13 +746,17 @@ def paper_time_peft_parameter_savings(
     frequency_hidden_size: int | None = None,
     channel_rank: int | None = None,
     action_ids: RouterActionIds | None = None,
+    count_inferred: bool = False,
+    optional_activation_rate: float | None = None,
 ) -> PaperParameterSavings:
-    """Apply the Time-PEFT paper's bias-free adapter parameter formulas.
+    """Apply the Time-PEFT paper adapter parameter formulas.
 
     ``P_F = h1*h2`` and ``P_C = r*(h1+h2) + C*r*h1``.  The default
-    ``h2=h1`` and ``r=h1/2`` match the paper.  Fixed parameters are the head
-    and LoRA terms that remain active for every route.  This computes *active
-    trainable* parameters; storing all four route options can require more.
+    ``h2=h1`` and ``r=h1/2`` match the paper. ``count_inferred=True`` adds the
+    projection biases and affine output LayerNorm used by the reproduction
+    variant. Fixed parameters are the head and LoRA terms that remain active for
+    every route. This computes *active trainable* parameters; storing all four
+    route options can require more.
     """
 
     if hidden_size <= 0 or channels <= 0:
@@ -465,25 +767,47 @@ def paper_time_peft_parameter_savings(
         raise ValueError("frequency_activation_rate must lie in [0, 1]")
     if not 0.0 <= channel_activation_rate <= 1.0:
         raise ValueError("channel_activation_rate must lie in [0, 1]")
+    if optional_activation_rate is not None and not 0.0 <= optional_activation_rate <= 1.0:
+        raise ValueError("optional_activation_rate must lie in [0, 1]")
     h2 = frequency_hidden_size if frequency_hidden_size is not None else hidden_size
     rank = channel_rank if channel_rank is not None else hidden_size // 2
     if h2 <= 0 or rank <= 0:
         raise ValueError("frequency_hidden_size and channel_rank must be positive")
 
-    frequency_parameters = hidden_size * h2
-    channel_parameters = rank * (hidden_size + h2) + channels * rank * hidden_size
-    always_on = fixed_trainable_parameters + frequency_parameters + channel_parameters
+    frequency_parameters = hidden_size * h2 + (h2 if count_inferred else 0)
+    channel_parameters = (
+        rank * (hidden_size + h2)
+        + channels * rank * hidden_size
+        + (rank + channels * hidden_size if count_inferred else 0)
+    )
+    output_norm_parameters = 2 * hidden_size if count_inferred else 0
+    if optional_activation_rate is None:
+        # It has no effect in the bias-free/non-affine variant. Count-inferred
+        # callers should pass the observed union P(F or C), which is identifiable
+        # from route counts but not from the two marginal activation rates alone.
+        optional_activation_rate = 0.0
+    always_on = (
+        fixed_trainable_parameters
+        + frequency_parameters
+        + channel_parameters
+        + output_norm_parameters
+    )
     expected = (
         fixed_trainable_parameters
         + frequency_activation_rate * frequency_parameters
         + channel_activation_rate * channel_parameters
+        + optional_activation_rate * output_norm_parameters
     )
     saved = always_on - expected
     routes = action_ids or RouterActionIds()
     active_by_route = {
         routes.base: fixed_trainable_parameters,
-        routes.frequency: fixed_trainable_parameters + frequency_parameters,
-        routes.channel: fixed_trainable_parameters + channel_parameters,
+        routes.frequency: (
+            fixed_trainable_parameters + frequency_parameters + output_norm_parameters
+        ),
+        routes.channel: (
+            fixed_trainable_parameters + channel_parameters + output_norm_parameters
+        ),
         routes.full: always_on,
     }
     return PaperParameterSavings(
@@ -494,6 +818,7 @@ def paper_time_peft_parameter_savings(
         fixed_trainable_parameters=fixed_trainable_parameters,
         frequency_adapter_parameters=frequency_parameters,
         channel_adapter_parameters=channel_parameters,
+        output_norm_parameters=output_norm_parameters,
         always_on_trainable_parameters=always_on,
         expected_router_trainable_parameters=expected,
         expected_saved_parameters=saved,
@@ -556,17 +881,15 @@ def _fit_binary_gate(
 
 
 def _complete_episodes(
-    records: Sequence[UtilityRecord], action_ids: RouterActionIds
+    records: Sequence[UtilityRecord],
+    action_ids: RouterActionIds,
+    *,
+    expected_seeds: Sequence[int] | None = None,
 ) -> list[_EpisodeActions]:
     grouped: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
     for record in records:
-        if str(_record_value(record, "status", default="ok")) != "ok":
-            continue
         action_id = str(_record_value(record, "action_id"))
         if action_id not in action_ids.all:
-            continue
-        loss = _record_float(record, "adapted_loss")
-        if not math.isfinite(loss):
             continue
         key = (
             str(_record_value(record, "dataset")),
@@ -579,9 +902,30 @@ def _complete_episodes(
         grouped.setdefault(key, {}).setdefault(action_id, []).append(record)
 
     output: list[_EpisodeActions] = []
-    for key, actions in sorted(grouped.items(), key=lambda item: item[0]):
-        if any(action_id not in actions for action_id in action_ids.all):
-            continue
+    for key, raw_actions in sorted(grouped.items(), key=lambda item: item[0]):
+        episode_label = _episode_label(key)
+        require_exact_seed_pairing(
+            raw_actions,
+            action_ids.all,
+            episode_label=episode_label,
+            seed_getter=lambda record: int(_record_value(record, "seed")),
+        )
+        actions = {
+            action_id: [
+                record
+                for record in raw_actions[action_id]
+                if str(_record_value(record, "status", default="ok")) == "ok"
+                and math.isfinite(_record_float(record, "adapted_loss"))
+            ]
+            for action_id in action_ids.all
+        }
+        seeds = require_exact_seed_pairing(
+            actions,
+            action_ids.all,
+            episode_label=f"{episode_label} (successful finite records)",
+            seed_getter=lambda record: int(_record_value(record, "seed")),
+            expected_seeds=expected_seeds,
+        )
         base_rows = actions[action_ids.base]
         evidence = _mean_evidence(base_rows)
         output.append(
@@ -590,6 +934,7 @@ def _complete_episodes(
                 episode_id=str(key[1]),
                 horizon=int(key[2]),
                 evidence=evidence,
+                seeds=seeds,
                 records={
                     action_id: tuple(
                         sorted(
@@ -604,6 +949,14 @@ def _complete_episodes(
     if not output:
         raise ValueError("No episodes contain a complete matched action set")
     return output
+
+
+def _episode_label(key: tuple[Any, ...]) -> str:
+    dataset, episode_id, horizon, config_hash, model_revision, preprocessing_hash = key
+    return (
+        f"{dataset}/{episode_id} (horizon={horizon}, config_hash={config_hash!r}, "
+        f"model_revision={model_revision!r}, preprocessing_hash={preprocessing_hash!r})"
+    )
 
 
 def _mean_evidence(records: Sequence[Any]) -> dict[str, float]:
@@ -658,6 +1011,9 @@ def _compare_observations(
     baseline: BenchmarkAggregate,
     *,
     noninferiority_margin: float,
+    bootstrap_samples: int,
+    bootstrap_confidence_level: float,
+    bootstrap_seed: int,
 ) -> BenchmarkComparison:
     """Compare accuracy by matched unit and costs by descriptive run aggregates.
 
@@ -668,6 +1024,15 @@ def _compare_observations(
     """
 
     relative_mse = _mean_unit_relative_difference(observations, "adapted_loss")
+    if relative_mse is None:
+        raise ValueError("MSE comparison unexpectedly produced no paired value")
+    relative_mse_ci_low, relative_mse_ci_high = _paired_cluster_bootstrap_interval(
+        observations,
+        "adapted_loss",
+        samples=bootstrap_samples,
+        confidence_level=bootstrap_confidence_level,
+        seed=bootstrap_seed,
+    )
     relative_mae = _mean_unit_relative_difference(
         observations,
         "adapted_mae",
@@ -675,6 +1040,8 @@ def _compare_observations(
     )
     return BenchmarkComparison(
         relative_mse_difference=relative_mse,
+        relative_mse_ci_low=relative_mse_ci_low,
+        relative_mse_ci_high=relative_mse_ci_high,
         relative_mae_difference=relative_mae,
         end_to_end_time_reduction_fraction=_reduction(
             router.end_to_end_wall_time_s,
@@ -694,7 +1061,11 @@ def _compare_observations(
         ),
         flops_reduction_fraction=_reduction(router.profiled_flops, baseline.profiled_flops),
         noninferiority_margin=noninferiority_margin,
-        noninferior_within_margin=relative_mse <= noninferiority_margin,
+        bootstrap_samples=bootstrap_samples,
+        bootstrap_confidence_level=bootstrap_confidence_level,
+        accuracy_superior=relative_mse_ci_high < 0.0,
+        point_noninferior_within_margin=relative_mse <= noninferiority_margin,
+        noninferior_within_margin=relative_mse_ci_high < noninferiority_margin,
     )
 
 
@@ -704,12 +1075,32 @@ def _mean_unit_relative_difference(
     *,
     optional: bool = False,
 ) -> float | None:
+    unit_differences = _unit_relative_differences(
+        observations,
+        metric,
+        optional=optional,
+    )
+    if not unit_differences:
+        if optional:
+            return None
+        raise ValueError(f"No finite paired unit values are available for {metric}")
+    return _mean_finite(list(unit_differences.values()))
+
+
+def _unit_relative_differences(
+    observations: Sequence[_MatchedObservation],
+    metric: str,
+    *,
+    optional: bool = False,
+) -> dict[tuple[str, int, str], float]:
+    """Average seeds first and return one paired relative value per unit."""
+
     grouped: dict[tuple[str, int, str], list[_MatchedObservation]] = {}
     for observation in observations:
         grouped.setdefault(observation.unit_key, []).append(observation)
 
-    unit_differences: list[float] = []
-    for unit_observations in grouped.values():
+    unit_differences: dict[tuple[str, int, str], float] = {}
+    for unit_key, unit_observations in grouped.items():
         selected_values: list[float] = []
         baseline_values: list[float] = []
         for observation in unit_observations:
@@ -726,18 +1117,128 @@ def _mean_unit_relative_difference(
             selected_values.append(selected_value)
             baseline_values.append(baseline_value)
         if selected_values:
-            unit_differences.append(
-                _relative_difference(
-                    _mean_finite(selected_values),
-                    _mean_finite(baseline_values),
-                )
+            unit_differences[unit_key] = _relative_difference(
+                _mean_finite(selected_values),
+                _mean_finite(baseline_values),
             )
+    return unit_differences
 
-    if not unit_differences:
-        if optional:
-            return None
+
+def _paired_cluster_bootstrap_interval(
+    observations: Sequence[_MatchedObservation],
+    metric: str,
+    *,
+    samples: int,
+    confidence_level: float,
+    seed: int,
+) -> tuple[float, float]:
+    """Resample datasets, then matched units, after seed averaging.
+
+    The target Cartesian protocol gives every dataset the same number of units.
+    Resampling whole dataset clusters before their units preserves cross-unit
+    dependence and avoids pretending that adaptation seeds are independent units.
+    """
+
+    if samples <= 0:
+        raise ValueError("Bootstrap samples must be positive")
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("Bootstrap confidence_level must lie in (0, 1)")
+    values = _unit_relative_differences(observations, metric)
+    if not values:
         raise ValueError(f"No finite paired unit values are available for {metric}")
-    return _mean_finite(unit_differences)
+    by_dataset: dict[str, list[float]] = {}
+    for (dataset, _horizon, _episode_id), value in values.items():
+        by_dataset.setdefault(dataset, []).append(value)
+    datasets = sorted(by_dataset)
+    rng = np.random.default_rng(seed)
+    clusters = [np.asarray(by_dataset[dataset], dtype=np.float64) for dataset in datasets]
+    cluster_sizes = {cluster.size for cluster in clusters}
+    selected_datasets = rng.integers(
+        0,
+        len(clusters),
+        size=(samples, len(clusters)),
+    )
+    if len(cluster_sizes) == 1:
+        # The configured Cartesian benchmark follows this fast path.
+        width = next(iter(cluster_sizes))
+        values_array = np.stack(clusters)
+        selected_units = rng.integers(
+            0,
+            width,
+            size=(samples, len(clusters), width),
+        )
+        estimates = values_array[
+            selected_datasets[..., None],
+            selected_units,
+        ].mean(axis=(1, 2))
+    else:
+        # Preserve cluster sizes if an analysis-only legacy store is unbalanced.
+        weighted_sums = np.zeros(samples, dtype=np.float64)
+        sampled_counts = np.zeros(samples, dtype=np.int64)
+        for position in range(len(clusters)):
+            chosen = selected_datasets[:, position]
+            for cluster_index, cluster in enumerate(clusters):
+                rows = np.flatnonzero(chosen == cluster_index)
+                if rows.size == 0:
+                    continue
+                indices = rng.integers(
+                    0,
+                    cluster.size,
+                    size=(rows.size, cluster.size),
+                )
+                weighted_sums[rows] += cluster[indices].sum(axis=1)
+                sampled_counts[rows] += cluster.size
+        estimates = weighted_sums / sampled_counts
+    return _central_interval(estimates, confidence_level)
+
+
+def _central_interval(values: np.ndarray, confidence_level: float) -> tuple[float, float]:
+    alpha = (1.0 - confidence_level) / 2.0
+    low, high = np.quantile(values, [alpha, 1.0 - alpha])
+    return float(low), float(high)
+
+
+def _multiset_permutation_count(values: Sequence[str]) -> int:
+    counts = Counter(values)
+    permutations = math.factorial(len(values))
+    for count in counts.values():
+        permutations //= math.factorial(count)
+    return permutations
+
+
+def _records_by_seed(episode: _EpisodeActions, action_id: str) -> dict[int, Any]:
+    return {
+        int(_record_value(record, "seed")): record
+        for record in episode.records[action_id]
+    }
+
+
+def _episode_action_mean(
+    episode: _EpisodeActions,
+    action_id: str,
+    metric: str,
+) -> float:
+    return _mean_finite(
+        [_record_float(record, metric) for record in episode.records[action_id]]
+    )
+
+
+def _best_source_fixed_action(
+    source: Sequence[_EpisodeActions],
+    action_ids: RouterActionIds,
+) -> str:
+    """Choose one fixed arm using source units only and scale-free losses."""
+
+    candidates = action_ids.all
+    scores: dict[str, float] = {}
+    for action_id in candidates:
+        differences = []
+        for episode in source:
+            candidate = _episode_action_mean(episode, action_id, "adapted_loss")
+            full = _episode_action_mean(episode, action_ids.full, "adapted_loss")
+            differences.append(_relative_difference(candidate, full))
+        scores[action_id] = _mean_finite(differences)
+    return min(candidates, key=lambda action_id: (scores[action_id], action_id))
 
 
 def _evidence_mapping(evidence: Mapping[str, float] | EvidenceBundle) -> dict[str, float]:

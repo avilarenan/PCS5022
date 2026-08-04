@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
   "click==8.1.7",
+  "dysts==0.96",
   "hydra-core==1.3.2",
   "momentfm @ git+https://github.com/moment-timeseries-foundation-model/moment.git@38f7310ad594100747ca2a8357e9c7ca7d323e0e",
   "numpy==1.26.4",

@@ -200,6 +200,7 @@ def test_nested_lodo_emits_ablation_and_matched_baseline_metrics(tmp_path) -> No
             device="cpu",
         ),
         bootstrap_samples=100,
+        expected_seeds=(0, 1),
     )
     assert len(result.folds) == 3
     assert set(result.folds[0].ablations) == set(ABLATION_FEATURE_SETS)
@@ -208,6 +209,24 @@ def test_nested_lodo_emits_ablation_and_matched_baseline_metrics(tmp_path) -> No
     for fold in result.folds:
         assert "d" in fold.heldout_dataset
         assert fold.episodes == 2
+
+
+def test_nested_lodo_rejects_disjoint_action_seed_sets(tmp_path) -> None:
+    evidence = {"spectral_entropy": 0.5}
+    records = [
+        _utility_record(
+            "d0",
+            "d0-episode-0",
+            f"A{action_index}",
+            0.1,
+            evidence,
+            action_index,
+        )
+        for action_index in range(7)
+    ]
+
+    with pytest.raises(ValueError, match=r"Exact seed pairing.*d0-episode-0"):
+        evaluate_leave_one_dataset_out(records, tmp_path, bootstrap_samples=10)
 
 
 def _utility_record(

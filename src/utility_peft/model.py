@@ -33,27 +33,36 @@ class AdaptableForecaster(nn.Module):
         super().__init__()
         if not isinstance(backbone, nn.Module):
             raise TypeError("BackboneProtocol implementations must also be torch modules")
-        if adapter_implementation not in {"mvp", "paper"}:
-            raise ValueError("adapter_implementation must be 'mvp' or 'paper'")
+        if adapter_implementation not in {"mvp", "paper", "paper_count_inferred"}:
+            raise ValueError(
+                "adapter_implementation must be 'mvp', 'paper', or "
+                "'paper_count_inferred'"
+            )
         self.backbone = backbone
         self.adapter_implementation = adapter_implementation
         self.channels = channels
-        if adapter_implementation == "paper":
+        if adapter_implementation in {"paper", "paper_count_inferred"}:
             if channels is None or channels <= 0:
                 raise ValueError("paper adapter implementation requires a channel count")
-            self.frequency_adapter = PaperFrequencyAdapter(backbone.d_model, top_k=frequency_top_k)
+            count_inferred = adapter_implementation == "paper_count_inferred"
+            self.frequency_adapter = PaperFrequencyAdapter(
+                backbone.d_model,
+                top_k=frequency_top_k,
+                bias=count_inferred,
+            )
             self.channel_adapter = PaperChannelAdapter(
                 backbone.d_model,
                 channels,
                 dropout=adapter_dropout,
+                bias=count_inferred,
             )
             # Algorithm 1 applies LayerNorm after the channel adapter. The
-            # paper's trainable set and parameter formulas exclude a separate
-            # normalization term, so use the exact normalization operation
-            # without adding affine trainable parameters.
+            # analytical formula omits biases and normalization, while the
+            # rounded Table 5 count is exactly consistent with ordinary linear
+            # biases and affine LayerNorm. Keep both interpretations explicit.
             self.paper_output_norm = nn.LayerNorm(
                 backbone.d_model,
-                elementwise_affine=False,
+                elementwise_affine=count_inferred,
             )
         else:
             self.frequency_adapter = FrequencyAdapter(backbone.d_model)
@@ -69,7 +78,7 @@ class AdaptableForecaster(nn.Module):
             raise RuntimeError(
                 "Backbone encode() must return [batch, channels, patches, embedding]"
             )
-        if self.adapter_implementation == "paper":
+        if self.adapter_implementation in {"paper", "paper_count_inferred"}:
             if self.frequency_enabled and self.channel_enabled:
                 # Accepted-paper Algorithm 1: the frequency representation and
                 # the original backbone representation feed the channel path;
@@ -153,6 +162,12 @@ def activate_action(model: AdaptableForecaster, action: ActionSpec) -> None:
         _set_trainable(model.frequency_adapter.parameters())
     if model.channel_enabled:
         _set_trainable(model.channel_adapter.parameters())
+    if (
+        model.adapter_implementation == "paper_count_inferred"
+        and (model.frequency_enabled or model.channel_enabled)
+        and model.paper_output_norm is not None
+    ):
+        _set_trainable(model.paper_output_norm.parameters())
 
 
 def trainable_parameter_names(model: nn.Module) -> tuple[str, ...]:
