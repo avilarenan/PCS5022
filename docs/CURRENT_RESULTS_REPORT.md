@@ -222,6 +222,23 @@ The original report looked encouraging:
 - end-to-end time: **0.97% slower**, not faster;
 - routes: `L=6`, `LF=4`, `LC=5`, `LFC=0`.
 
+The dataset-level version of the Section 7 comparison is shown below using the
+pilot's own matched baselines. Section 7 uses conventional target training, so
+its absolute MSE values cannot be pooled with this episodic source-head pilot.
+Here, `Router vs baseline` is the mean paired relative MSE difference after first
+averaging seeds within each episode; negative values favor the router. The MSE
+columns are descriptive run means, so their visible ratio need not equal the
+equal-episode percentage.
+
+| Dataset | Pilot `L` (LoRA) MSE | Pilot `LFC` MSE | Our router MSE | Router vs `L` | Router vs `LFC` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DoublePendulum | 3.020870 | 4.607523 | 3.312750 | +8.54% | -23.22% |
+| ECGCA515 | 18.523445 | 145.864553 | 18.528365 | +0.62% | -41.19% |
+| ETTh1 | 1.368522 | 1.775906 | 1.972133 | +40.14% | +9.81% |
+| Lorenz | 1.167861 | 1.497729 | 1.443243 | +20.80% | -7.29% |
+| Weather | 1.176051 | 1.810372 | 1.176051 | +0.00% | -31.21% |
+| **Overall equal-episode mean** | -- | -- | -- | **+14.02%** | **-18.62%** |
+
 Applying the later control analysis to the immutable pilot records changes the
 interpretation:
 
